@@ -177,7 +177,7 @@ input:focus, textarea:focus { border-color: var(--primary); }
 @media (max-width: 640px) { .inbox li { grid-template-columns: minmax(0, 1fr); } .inbox .acts { grid-row: auto; } }
 
 /* ---------- payments grid ---------- */
-.search { width: 220px; flex: none; }
+input.search { width: 220px; flex: none; }
 .filters { display: flex; gap: 6px; flex-wrap: wrap; margin-top: -4px; }
 .filters button { height: 28px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--ink-2); font-size: 12px; font-weight: 500; cursor: pointer; }
 .filters button[aria-selected=true] { background: var(--ink); border-color: var(--ink); color: var(--surface); }
@@ -192,7 +192,7 @@ input:focus, textarea:focus { border-color: var(--primary); }
 .grid .ag-row-pinned { font-weight: 600; background: var(--surface-2); cursor: default; }
 .cell-acts { display: flex; gap: 6px; align-items: center; height: 100%; }
 .cell-acts .btn { height: 26px; padding: 0 10px; font-size: 12px; }
-@media (max-width: 640px) { .search { width: 100%; } .card-head { flex-wrap: wrap; } }
+@media (max-width: 640px) { input.search { width: 100%; } .card-head { flex-wrap: wrap; } }
 
 /* ---------- log ---------- */
 .log { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; font-size: 13px; }

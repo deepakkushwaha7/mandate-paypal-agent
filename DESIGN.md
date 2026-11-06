@@ -14,31 +14,32 @@ Mandate moves money on someone's behalf, so the interface has one job: make it o
 
 | Token | Light | Dark | Meaning |
 | --- | --- | --- | --- |
-| `--accent` | `#2448d8` | `#7f9cff` | Actions, links, focus |
-| `--ok` | `#0d7a46` | `#4cc987` | Paid, rule passed |
-| `--warn` | `#a14f05` | `#f1b25a` | Needs a human |
-| `--bad` | `#c0291b` | `#ff7e70` | Blocked, stop, destructive |
-| `--held` | `#5b3fd6` | `#a897ff` | Money held by PayPal, undo open |
-| `--ink` / `--muted` | `#0f172a` / `#536079` | `#e7ebf2` / `#96a2b6` | Text |
-| `--bg` / `--surface` / `--line` | `#f4f6f9` / `#fff` / `#e2e6ed` | `#0a0e16` / `#121823` / `#232c3b` | Structure |
+| `--primary` | `#0a5cff` | `#6d9bff` | Actions, links, focus |
+| `--ok` | `#0b7a46` | `#4cc98a` | Paid, rule passed |
+| `--warn` | `#a64d00` | `#f3b25c` | Waiting for you |
+| `--bad` | `#c8291f` | `#ff7f73` | Blocked, stop, destructive |
+| `--hold` | `#5a3fd8` | `#a898ff` | Money on hold in PayPal, can undo |
+| `--ink` / `--ink-2` / `--ink-3` | `#0b1b3f` / `#44546f` / `#6b7a94` | `#e8edf6` / `#b2bdd0` / `#8794ab` | Text |
+| `--bg` / `--surface` / `--line` | `#f4f6fa` / `#fff` / `#e3e8f0` | `#0a0f1c` / `#111827` / `#1f2a3d` | Structure |
 
-Each colour has a `-soft` background pair. Every text and background pair passes **WCAG AA (≥ 4.5:1)** in both themes. The lowest is 4.8:1 (`--ok` on `--ok-soft`, light). Text on solid buttons uses `--on-solid`, which flips to dark in dark mode so red and green buttons stay readable.
+**Type:** Inter for everything, with tabular figures for money. Scale: 12 / 13 / 14 / 15 / 18 / 28 / 30 px. Monospace is used only for PayPal reference IDs.
 
-**Type:** Instrument Sans for interface text, JetBrains Mono for money, IDs and codes, with tabular figures so amounts line up.
+**Space and shape:** 8px grid (8, 12, 16, 20, 24, 32). Cards have a 16px radius, controls are pill-shaped, and inputs have an 8px radius. Cards get a hairline border and a soft shadow. Only "Waiting for you" gets a coloured border, because it is the only card that needs action.
 
-**Shape:** 12px card radius, 8px controls, 99px pills. Cards get a hairline border and a soft shadow. Only the approval inbox gets a coloured border, because it is the only thing waiting on you.
+**Words:** plain English for a non-technical buyer. "On hold" not "authorized", "Undone" not "voided", "Waiting for you" not "needs approval", and item names, never SKU codes.
 
 ## Components
 
 | Component | Where | Notes |
 | --- | --- | --- |
 | Status pill | Grid, receipt header | `Held · undo`, `Paid`, `Needs you`, `Blocked`, `Undone`, `Refunded` |
-| Decision receipt | Order detail | 14 rules, each ✓ / ! / ✕, with mandate version, agent and the agent's reason |
+| Payment drawer | Click any payment | Verdict, the rules that decided it, passed rules folded away, the agent's reason, items, PayPal references |
 | Undo toast | Bottom right | One per agent payment, live countdown, disappears at capture |
-| Approval inbox | Above the grid | Only rendered when something waits; "Why?" opens the receipt |
-| Kill switch | Header | Two-step: states the impact, then confirms; Esc cancels |
+| Waiting for you | Under the agent | Only rendered when something waits; "See why" opens the receipt |
+| Stop all agents | Header | Confirmation dialog states how many payments on hold get cancelled, and for how much; Esc cancels |
+| Guided tour | Header and welcome card | 7 steps with a spotlight on each part of the screen; Esc or Skip ends it |
 | Mandate editor | Mandate card | Plain English → preview of changes (before/after) → Apply |
-| First-run steps | Below header | Save PayPal → Check mandate → Run agent; hides when done |
+| Welcome card | Top | One sentence of value, the 3 steps with live progress, tour button; hides when done or dismissed |
 
 ## Accessibility
 

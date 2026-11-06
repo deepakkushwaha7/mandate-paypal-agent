@@ -60,15 +60,40 @@ The purchasing agent is an LLM with tool use: `get_stock`, `get_mandate`, `submi
 
 Supported models (set one key): **Google Gemini** (`GEMINI_API_KEY`, free tier, default `gemini-3.8-flash`), **Anthropic Claude** (`ANTHROPIC_API_KEY`) or **Llama on Groq** (`GROQ_API_KEY`). If the model is unavailable before it proposes anything, a deterministic planner that follows the same tool protocol takes over, so a buyer is never stuck. With no key at all, the app, the tests and the demo still run offline.
 
+## For judges: what to try (3 minutes)
+
+Open the hosted demo. Every visitor gets a **private demo workspace**, so nothing you click affects anyone else.
+
+1. **Take the tour** (top right), or follow the three steps on the welcome card.
+2. **Save PayPal for agents** and approve in the PayPal sandbox with the test buyer below.
+3. **Edit your rules** in plain English, for example *"Keep it under 3k a month, nothing over €400 without me"*, then **Preview changes** and **Apply**.
+4. **Run agent** with the *Black Friday* suggestion. You'll see one order paid automatically, two waiting for you, and one blocked.
+5. Click any payment to read its **decision receipt**. Press **Undo** on the paid one, approve a waiting one in PayPal, then try **Stop all agents**.
+
+## PayPal Agent Toolkit guard
+
+PayPal's [Agent Toolkit](https://github.com/paypal/agent-toolkit) lets an LLM call PayPal directly, but it has no spending limits or approval step of its own. `examples/paypal-agent-toolkit-guard.js` wraps it with the same API. Read-only tools pass through. Money-moving tools (`create_refund`, `create_order`, `create_invoice`, `send_invoice`, `pay_order`, `create_subscription`, `accept_dispute_claim`) are checked against your mandate first: **allowed**, **held for a human**, or **blocked**. Every decision goes into the audit log.
+
+```js
+const { PayPalAgentToolkit } = require('@paypal/agent-toolkit/openai');
+const { guardToolkit } = require('./examples/paypal-agent-toolkit-guard');
+const guarded = guardToolkit(new PayPalAgentToolkit({ clientId, clientSecret, configuration }), {
+  agentId: 'claude-desktop', mandateUrl: 'https://mandate-aadp.onrender.com', agentKey: 'mk_…',
+});
+await guarded.handleToolCall(toolCall);
+```
+
+We ship it as a wrapper rather than a dependency on purpose: the toolkit package currently pulls in 12 known high-severity vulnerabilities through pinned dependencies, and Mandate's production dependency tree has none.
+
 ## Connect any agent with MCP
 
 ```json
 {
   "mcpServers": {
     "mandate": {
-      "command": "node",
-      "args": ["/path/to/mandate/src/mcp.js"],
-      "env": { "MANDATE_URL": "https://your-mandate-host", "MANDATE_AGENT_ID": "claude-desktop", "MANDATE_AGENT_TOKEN": "..." }
+      "command": "npx",
+      "args": ["-y", "-p", "github:deepakkushwaha7/mandate-paypal-agent", "mandate-mcp"],
+      "env": { "MANDATE_URL": "https://mandate-aadp.onrender.com", "MANDATE_AGENT_ID": "claude-desktop", "MANDATE_AGENT_KEY": "mk_… (Agents → Connect an agent)" }
     }
   }
 }
@@ -80,7 +105,8 @@ Tools: `get_spending_mandate`, `check_purchase` (dry run with every rule), `purc
 
 - Secrets only in environment variables (see `.env.example`). Nothing secret is stored in the repo or sent to the browser.
 - Strict Content-Security-Policy, no framing, `nosniff`, HSTS behind HTTPS, and no `x-powered-by` header.
-- Cross-site writes are blocked (Origin and `Sec-Fetch-Site` checks). The external agent API needs a bearer token (`MANDATE_AGENT_TOKEN`).
+- Every visitor gets a private workspace keyed by an HttpOnly, SameSite cookie. External agents authenticate with a per-workspace agent key (constant-time compare), never the session cookie.
+- Cross-site writes are blocked (Origin and `Sec-Fetch-Site` checks).
 - Rate limiting and request size limits. PayPal webhooks are trusted only after PayPal verifies the signature.
 - Per-order locks, so a double-click can't void or approve twice. Every PayPal call is idempotent (`PayPal-Request-Id`).
 - The model never sets prices or totals: the server prices every line from the catalogue.
@@ -88,14 +114,15 @@ Tools: `get_spending_mandate`, `check_purchase` (dry run with every rule), `purc
 
 ## Quality
 
-`npm run check` runs ESLint and **30 tests**: policy rules, PayPal payloads, the full agent run, undo/void/refund, split orders, the kill switch, vault fallback, webhooks, the plain-English parser, the HTTP API, an end-to-end MCP client, and security (headers, CSRF, auth, limits, double-click). GitHub Actions runs the same checks on Node 20 and 22. The design system is in [DESIGN.md](DESIGN.md).
+`npm run check` runs ESLint and **35 unit and integration tests**, and `npm run e2e` drives the full judge journey in a real browser (tour, save PayPal, rules, agent run, receipt, undo, approve, stop all, phone width): policy rules, PayPal payloads, the full agent run, undo/void/refund, split orders, the kill switch, vault fallback, webhooks, the plain-English parser, the HTTP API, an end-to-end MCP client, and security (headers, CSRF, auth, limits, double-click). GitHub Actions runs the same checks on Node 20 and 22. The design system is in [DESIGN.md](DESIGN.md).
 
 ## Run it
 
 ```bash
 npm install
 npm start            # http://localhost:3000
-npm run check        # lint + 30 tests
+npm run check        # lint + 35 tests
+npm run e2e          # browser end-to-end (Playwright)
 ```
 
 With no credentials the app runs a **simulated PayPal** (clearly labelled in the header) so anyone can try the full flow.
@@ -134,6 +161,9 @@ src/paypal.js   PayPal REST client + simulator with the same interface
 src/orders.js   order lifecycle: authorize, approve, undo (void/refund), capture
 src/server.js   Express API, live updates over Server-Sent Events
 src/security.js headers, same-origin check, rate limit
+src/workspace.js private demo workspace per visitor
+src/llm.js      Gemini / Claude / Groq adapter with planner fallback
+examples/       PayPal Agent Toolkit guard
 src/mcp.js      MCP server for external agents
 src/mandate-text.js  plain-English mandate → rules (Claude or parser)
 public/         dashboard (AG Grid order grid, vanilla JS)
