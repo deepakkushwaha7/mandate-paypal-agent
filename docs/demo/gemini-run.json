@@ -1,0 +1,10 @@
+{
+  "source": "Captured from the live app (mandate-aadp.onrender.com) on 6 Nov 2026, Gemini gemini-3.5-flash-lite, instruction: 'Black Friday campaign starts in 2 weeks'. Used with LLM_PROVIDER=replay to re-record the demo video offline with the exact model output.",
+  "parse": { "monthlyCap": 3000, "perOrderCap": 1500, "autoApproveBelow": 500, "maxPriceIncreasePct": 5, "allowedSupplierIds": ["sup-boxly", "sup-tissu", "sup-label"], "allowedCategories": ["packaging", "labels"] },
+  "agent": [
+    { "toolCalls": [{ "name": "get_stock", "input": {} }, { "name": "get_mandate", "input": {} }] },
+    { "toolCalls": [{ "name": "submit_order", "input": { "lines": [{ "sku": "MBX-S-KRAFT", "qty": 1800, "reason": "7 days of stock left and lead time is 7 days, plus extra for the Black Friday campaign starting in 2 weeks." }], "note": "Reordering small kraft mailer boxes for Black Friday demand." } }] },
+    { "toolCalls": [{ "name": "submit_order", "input": { "lines": [{ "sku": "LBL-BAG-250", "qty": 3000, "reason": "8 days of stock left and lead time is 5 days, plus extra for the Black Friday campaign starting in 2 weeks." }], "note": "Reordering coffee bag labels for Black Friday demand." } }] },
+    { "toolCalls": [{ "name": "finish", "input": { "summary": "I ran the reorder check ahead of the Black Friday campaign starting in 2 weeks:\n\n1. **Boxly Packaging BV**: Ordered 1,800 Small kraft mailer boxes (€1,116.00). This order needs your approval because the price increased by 6.9% (above the 5% auto-approval limit) and the total is over €500.\n2. **LabelWorks Ltd**: Ordered 3,000 Coffee bag labels 250 g (€210.00). This order was placed automatically via PayPal.\n3. **Canvas Tote Bags**: Not ordered because PromoMax Wholesale is not an allowed supplier under your current spending mandate.\n4. **Tissue Paper A3** and **Round Stickers**: Stock levels are still healthy, so no reorder was needed yet." } }] }
+  ]
+}

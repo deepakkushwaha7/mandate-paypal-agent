@@ -492,6 +492,10 @@
     await api('POST', '/api/agent/run', { instruction: $('instruction').value.trim() });
   });
 
+  // Model text may contain light Markdown (**bold**, line breaks, numbered
+  // lists). Escape first, then allow only bold and line breaks.
+  const richText = (text) => esc(String(text).trim()).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/\n+/g, '<br>');
+
   function addStep(t) {
     if (t.kind === 'done' || t.kind === 'start') return;
     $('feed-empty').hidden = true;
@@ -499,7 +503,7 @@
     let cls = '';
     let ic = '•';
     let html = esc(t.text);
-    if (t.kind === 'thought') { cls = 'think'; ic = 'AI'; }
+    if (t.kind === 'thought') { cls = 'think'; ic = 'AI'; html = richText(t.text); }
     if (t.kind === 'tool') { ic = '↻'; html = `<span class="muted">${esc(t.text)}</span>`; }
     if (t.kind === 'proposal') {
       cls = t.decision;
@@ -508,7 +512,7 @@
       const issue = (t.checks || []).filter((c) => (t.decision === 'blocked' ? c.status === 'block' : c.status === 'review')).map((c) => c.detail);
       html = `<span class="who">${label}</span>${esc(t.text)}${issue.length ? `<div class="why">${esc(issue.join(' '))}</div>` : ''}`;
     }
-    if (t.kind === 'finish') { cls = 'finish'; ic = '✓'; html = `<span class="who">Summary.</span>${esc(t.text)}`; }
+    if (t.kind === 'finish') { cls = 'finish'; ic = '✓'; html = `<span class="who">Summary.</span> ${richText(t.text)}`; }
     if (t.kind === 'error') { cls = 'blocked'; ic = '✕'; }
     li.className = cls;
     li.innerHTML = `<span class="ic" aria-hidden="true">${ic}</span><div class="body">${html}</div>`;
