@@ -47,8 +47,8 @@ test('blocks MOQ, pack size, mixed suppliers and caps', () => {
   const { store } = fresh();
   store.state.mandate.vaultId = 'V';
   const codes = (p) => evaluate(store.state, p).reasons.map((r) => r.code);
-  assert.ok(codes({ lines: [{ sku: 'MBX-S-KRAFT', qty: 100 }] }).includes('BELOW_MOQ'));
-  assert.ok(codes({ lines: [{ sku: 'MBX-S-KRAFT', qty: 260 }] }).includes('PACK_SIZE'));
+  assert.ok(codes({ lines: [{ sku: 'MBX-S-KRAFT', qty: 100 }] }).includes('QUANTITY'));
+  assert.ok(codes({ lines: [{ sku: 'MBX-S-KRAFT', qty: 260 }] }).includes('QUANTITY'));
   assert.ok(codes({ lines: [{ sku: 'MBX-S-KRAFT', qty: 250 }, { sku: 'TIS-A3-GOLD', qty: 1000 }] }).includes('MULTI_SUPPLIER'));
   assert.ok(codes({ lines: [{ sku: 'MBX-M-KRAFT', qty: 2000 }] }).includes('PER_ORDER_CAP'));
   store.state.mandate.openingSpend = 2450;
@@ -166,6 +166,110 @@ test('HTTP: run agent, connect PayPal (simulated), approve flow', async () => {
     assert.equal(s.orders.filter((o) => o.status === 'AUTHORIZED').length, 2);
     r = await fetch(`${base}/api/state`).then(j);
     assert.ok(r.audit.length > 3);
+  } finally {
+    server.close();
+    stop();
+  }
+});
+
+test('every evaluation carries a receipt with each rule checked', () => {
+  const { store } = fresh();
+  const v = evaluate(store.state, { lines: [{ sku: 'TIS-A3-GOLD', qty: 1000 }], note: 'Low cover' });
+  assert.ok(v.checks.length >= 12);
+  for (const c of v.checks) assert.ok(['pass', 'review', 'block', 'skip'].includes(c.status));
+  assert.equal(v.receipt.mandateVersion, 1);
+  assert.equal(v.receipt.agentName, 'Reorder agent');
+  assert.equal(v.receipt.rationale, 'Low cover');
+});
+
+test('split orders count together against the auto-pay limit', async () => {
+  const { store, orders } = fresh();
+  store.state.mandate.vaultId = 'V';
+  // €330 auto-paid to Tissu Print...
+  const first = orders.create(evaluate(store.state, { lines: [{ sku: 'TIS-A3-GOLD', qty: 3000 }] }), {});
+  await orders.payAuto(first);
+  assert.equal(first.status, 'AUTHORIZED');
+  // ...so another €110 to the same supplier the same day needs a human, even though it is small.
+  store.state.orders.forEach((o) => (o.lines = o.lines.map((l) => ({ ...l, sku: 'X' }))));
+  const v = evaluate(store.state, { lines: [{ sku: 'TIS-A3-GOLD', qty: 1000 }] });
+  assert.equal(v.decision, 'needs_approval');
+  assert.ok(v.reasons.some((r) => r.code === 'SPLIT_ORDER'));
+});
+
+test('unknown or paused agents cannot spend; agent budgets are enforced', () => {
+  const { store } = fresh();
+  store.state.mandate.vaultId = 'V';
+  assert.equal(evaluate(store.state, { agentId: 'nobody', lines: [{ sku: 'TIS-A3-GOLD', qty: 1000 }] }).decision, 'blocked');
+  store.state.agents[1].active = false;
+  assert.equal(evaluate(store.state, { agentId: 'claude-desktop', lines: [{ sku: 'TIS-A3-GOLD', qty: 1000 }] }).decision, 'blocked');
+  store.state.agents[1].active = true;
+  store.state.agents[1].monthlyCap = 100;
+  const v = evaluate(store.state, { agentId: 'claude-desktop', lines: [{ sku: 'TIS-A3-GOLD', qty: 1000 }] });
+  assert.ok(v.reasons.some((r) => r.code === 'AGENT_CAP'));
+});
+
+test('kill switch pauses the mandate and voids open authorizations', async () => {
+  const { store, orders } = fresh();
+  store.state.mandate.vaultId = 'V';
+  const o = orders.create(evaluate(store.state, { lines: [{ sku: 'TIS-A3-GOLD', qty: 1000 }] }), {});
+  await orders.payAuto(o);
+  const r = await orders.killSwitch('Priya');
+  assert.equal(r.voided, 1);
+  assert.equal(o.status, 'VOIDED');
+  assert.equal(store.state.mandate.active, false);
+  assert.equal(evaluate(store.state, { lines: [{ sku: 'LBL-BAG-250', qty: 2000 }] }).decision, 'blocked');
+});
+
+test('a PayPal vault refusal falls back to approval instead of failing', async () => {
+  const { store, paypal, orders } = fresh();
+  store.state.mandate.vaultId = 'V';
+  paypal.refuseVault = true;
+  const o = orders.create(evaluate(store.state, { lines: [{ sku: 'TIS-A3-GOLD', qty: 1000 }] }), {});
+  await orders.payAuto(o);
+  assert.equal(o.status, 'NEEDS_APPROVAL');
+  assert.ok(o.reasons.some((r) => r.code === 'VAULT_REFUSED'));
+  assert.equal(store.state.mandate.vaultBlocked, true);
+  assert.equal(evaluate(store.state, { lines: [{ sku: 'LBL-BAG-250', qty: 2000 }] }).decision, 'needs_approval');
+});
+
+test('webhooks reconcile order status', async () => {
+  const { store, orders } = fresh();
+  store.state.mandate.vaultId = 'V';
+  const o = orders.create(evaluate(store.state, { lines: [{ sku: 'TIS-A3-GOLD', qty: 1000 }] }), {});
+  await orders.payAuto(o);
+  orders.reconcile({ event_type: 'PAYMENT.AUTHORIZATION.VOIDED', resource: { id: o.paypal.authorizationId } });
+  assert.equal(o.status, 'VOIDED');
+  assert.equal(orders.reconcile({ event_type: 'PAYMENT.CAPTURE.COMPLETED', resource: { id: 'nope' } }), null);
+});
+
+test('plain-English mandate is parsed into rules', async () => {
+  const { parseMandate } = require('../src/mandate-text');
+  const { store } = fresh();
+  const r = await parseMandate('Budget 3k per month, max €800 per order, nothing over €250 without me. Only labels from LabelWorks. Undo window 2 minutes.', store.state);
+  assert.deepEqual(r.proposed, { monthlyCap: 3000, perOrderCap: 800, autoApproveBelow: 250, undoWindowSec: 120, allowedSupplierIds: ['sup-label'], allowedCategories: ['labels'] });
+  assert.ok(r.changes.length >= 5);
+  assert.deepEqual((await parseMandate('Pause all agents now', store.state)).proposed, { active: false });
+});
+
+test('HTTP: external agent (MCP) purchase, check and status', async () => {
+  const { app, store, stop } = createApp({ store: new Store(null), baseUrl: 'http://127.0.0.1:0', sweepMs: 60000 });
+  store.state.mandate.vaultId = 'VAULT-T';
+  const server = app.listen(0);
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const post = (u, b) => fetch(base + u, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then((r) => r.json());
+  try {
+    const ctx = await fetch(`${base}/api/agents/claude-desktop/context`).then((r) => r.json());
+    assert.equal(ctx.agent.name, 'Claude Desktop');
+    const chk = await post('/api/agents/claude-desktop/check', { lines: [{ sku: 'LBL-BAG-250', qty: 2000 }] });
+    assert.equal(chk.decision, 'auto');
+    const buy = await post('/api/agents/claude-desktop/purchase', { lines: [{ sku: 'LBL-BAG-250', qty: 2000 }], note: 'Labels for the weekend' });
+    assert.equal(buy.status, 'AUTHORIZED');
+    const st = await fetch(`${base}/api/agents/claude-desktop/orders/${buy.orderId}`).then((r) => r.json());
+    assert.equal(st.status, 'AUTHORIZED');
+    const over = await post('/api/agents/claude-desktop/purchase', { lines: [{ sku: 'MBX-S-KRAFT', qty: 500 }] });
+    assert.equal(over.decision, 'blocked'); // €310 + €140 > Claude Desktop's €300 budget
+    const kill = await post('/api/kill', {});
+    assert.equal(kill.voided, 1);
   } finally {
     server.close();
     stop();

@@ -9,6 +9,11 @@
 
 const { evaluate, round2 } = require('./policy');
 
+function isVaultRefusal(e) {
+  const text = `${e.message} ${JSON.stringify((e.body && e.body.details) || '')}`;
+  return /NOT_ENABLED_TO_VAULT|PAYEE_NOT_ENABLED_FOR_VAULT|VAULT_NOT_ENABLED|PAYMENT_SOURCE_CANNOT_BE_USED|INVALID_VAULT_ID|PAYER_ACTION_REQUIRED/i.test(text);
+}
+
 class Orders {
   constructor({ store, paypal, baseUrl }) {
     this.store = store;
@@ -20,13 +25,18 @@ class Orders {
     return this.store.state;
   }
 
-  create(v, input, actor = 'Agent') {
+  create(v, input, actor) {
     const sup = this.store.supplier(v.supplierId);
+    const agent = (this.state.agents || []).find((a) => a.id === v.agentId);
+    actor = actor || (agent ? agent.name : 'Agent');
     const status = v.decision === 'blocked' ? 'BLOCKED' : v.decision === 'auto' ? 'PAYING' : 'NEEDS_APPROVAL';
     const order = {
       id: this.store.nextId('PO'),
       createdAt: new Date().toISOString(),
       createdBy: actor,
+      agentId: v.agentId,
+      checks: v.checks,
+      receipt: v.receipt,
       supplierId: v.supplierId,
       supplierName: sup ? sup.name : 'Unknown supplier',
       lines: v.lines,
@@ -51,9 +61,68 @@ class Orders {
   async payAuto(order) {
     try {
       const r = await this.paypal.authorizeWithVault({ vaultId: this.state.mandate.vaultId, order, catalogue: this.state.catalogue });
-      this.authorized(order, r, 'Agent');
+      this.authorized(order, r, order.createdBy);
     } catch (e) {
-      this.fail(order, e);
+      if (isVaultRefusal(e)) {
+        // PayPal will not charge the saved account (e.g. the merchant is not
+        // enabled for vaulted payments). Fall back to buyer approval rather
+        // than failing the order, and stop trying the vault until it is fixed.
+        this.state.mandate.vaultBlocked = true;
+        order.status = 'NEEDS_APPROVAL';
+        order.decision = 'needs_approval';
+        const msg = 'PayPal refused to charge the saved account, so this order needs approval in PayPal.';
+        order.reasons = [...order.reasons, { code: 'VAULT_REFUSED', severity: 'review', message: msg }];
+        if (order.checks) order.checks = order.checks.map((c) => (c.code === 'NO_VAULT' ? { ...c, status: 'review', detail: msg } : c));
+        this.store.audit('PayPal', 'vault.refused', `${order.id}: ${e.message}. Switched to approval in PayPal.`, order.id);
+        this.store.save();
+      } else {
+        this.fail(order, e);
+      }
+    }
+    return order;
+  }
+
+  // Kill switch: pause every agent and void every authorization that is
+  // still inside its undo window. Nothing already captured is touched.
+  async killSwitch(actor) {
+    const m = this.state.mandate;
+    m.active = false;
+    m.version = (m.version || 1) + 1;
+    const open = this.state.orders.filter((o) => o.status === 'AUTHORIZED');
+    let voided = 0;
+    for (const o of open) {
+      try {
+        await this.undo(o, actor, true);
+        voided += 1;
+      } catch (e) {
+        this.store.audit('PayPal', 'payment.void_failed', `${o.id}: ${e.message}`, o.id);
+      }
+    }
+    this.store.audit(actor, 'mandate.killed', `Kill switch: all agents paused${voided ? `, ${voided} open authorization${voided > 1 ? 's' : ''} voided` : ''}.`);
+    this.store.save();
+    return { voided };
+  }
+
+  // Applies a verified PayPal webhook to the matching order.
+  reconcile(event) {
+    const r = event.resource || {};
+    const ids = [r.id, r.custom_id, r.invoice_id && r.invoice_id.split('-').slice(0, 2).join('-'),
+      r.supplementary_data && r.supplementary_data.related_ids && r.supplementary_data.related_ids.authorization_id].filter(Boolean);
+    if (!ids.length) return null;
+    const order = this.state.orders.find((o) => [o.id, o.paypal.authorizationId, o.paypal.captureId].filter(Boolean).some((x) => ids.includes(x)));
+    if (!order) return null;
+    const map = {
+      'PAYMENT.AUTHORIZATION.VOIDED': 'VOIDED',
+      'PAYMENT.CAPTURE.COMPLETED': 'CAPTURED',
+      'PAYMENT.CAPTURE.REFUNDED': 'REFUNDED',
+      'PAYMENT.CAPTURE.DENIED': 'FAILED',
+    };
+    const next = map[event.event_type];
+    if (next && order.status !== next) {
+      this.store.audit('PayPal webhook', 'webhook.applied', `${order.id}: ${event.event_type} (was ${order.status}).`, order.id);
+      order.status = next;
+      if (next !== 'CAPTURED') order.undoUntil = null;
+      this.store.save();
     }
     return order;
   }
@@ -80,7 +149,7 @@ class Orders {
   async startApproval(order) {
     if (order.status !== 'NEEDS_APPROVAL') throw new Error(`${order.id} is ${order.status}, not waiting for approval.`);
     const others = this.state.orders.filter((o) => o.id !== order.id);
-    const v = evaluate({ ...this.state, orders: others }, { lines: order.lines.map((l) => ({ sku: l.sku, qty: l.qty })) });
+    const v = evaluate({ ...this.state, orders: others }, { agentId: order.agentId, lines: order.lines.map((l) => ({ sku: l.sku, qty: l.qty })) });
     const hard = v.reasons.filter((r) => r.severity === 'block');
     if (hard.length) throw new Error(`Cannot approve: ${hard.map((r) => r.message).join(' ')}`);
     const r = await this.paypal.createApprovalOrder({
@@ -129,7 +198,7 @@ class Orders {
     return order;
   }
 
-  async undo(order, actor) {
+  async undo(order, actor, quiet) {
     if (order.status === 'AUTHORIZED') {
       await this.paypal.voidAuthorization(order.paypal.authorizationId);
       order.status = 'VOIDED';
@@ -144,7 +213,7 @@ class Orders {
     } else {
       throw new Error(`${order.id} is ${order.status} and cannot be undone.`);
     }
-    this.store.save();
+    if (!quiet) this.store.save();
     return order;
   }
 

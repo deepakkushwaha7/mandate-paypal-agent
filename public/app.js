@@ -143,6 +143,32 @@
       [m.allowedSupplierIds.map(supName).join(', '), 'allowed suppliers'],
     ].map(([b, t]) => `<li><b>${esc(b)}</b><span>${esc(t)}</span></li>`).join('');
     if (!editing) fillForm();
+    $('mversion').textContent = `version ${m.version || 1}`;
+    const pt = $('plain-text');
+    if (document.activeElement !== pt && !pt.dataset.dirty) pt.value = m.plainText || '';
+
+    // kill switch and paused banner
+    const kill = $('kill');
+    kill.textContent = m.active ? 'Stop all agents' : 'Resume agents';
+    kill.classList.toggle('off', !m.active);
+    let banner = $('paused');
+    if (!m.active && !banner) {
+      banner = document.createElement('div');
+      banner.id = 'paused';
+      banner.className = 'paused-banner';
+      banner.textContent = 'All agents are stopped. No agent can spend until you resume.';
+      document.querySelector('.layout').before(banner);
+    } else if (m.active && banner) banner.remove();
+
+    // agents
+    $('agent-list').innerHTML = (s.agents || []).map((a) => `<li>
+      <div><b>${esc(a.name)}</b><div class="meta">${esc(a.kind)}</div></div>
+      <input type="checkbox" class="switch" data-agent="${esc(a.id)}" ${a.active ? 'checked' : ''} aria-label="${esc(a.name)} may spend">
+      <span class="bar"><i style="width:${Math.min(100, (a.spent / (a.monthlyCap || 1)) * 100)}%"></i></span>
+      <span class="spent">${eur(a.spent)} of ${eur(a.monthlyCap)} this month</span></li>`).join('');
+    document.querySelectorAll('[data-agent]').forEach((el) => (el.onchange = act(() => api('PATCH', `/api/agents/${el.dataset.agent}`, { active: el.checked }))));
+    $('mcp-config').textContent = JSON.stringify({ mcpServers: { mandate: { command: 'node', args: ['/path/to/mandate/src/mcp.js'], env: { MANDATE_URL: location.origin, MANDATE_AGENT_ID: 'claude-desktop' } } } }, null, 2);
+    toastNew(s.orders);
 
     // run button
     $('run').disabled = s.running;
@@ -173,9 +199,12 @@
     const o = state && state.orders.find((x) => x.id === selectedId);
     if (!o) { el.hidden = true; return; }
     el.hidden = false;
-    const reasons = o.reasons.length
-      ? o.reasons.map((r) => `<li class="${r.severity}">${esc(r.message)}</li>`).join('')
-      : '<li class="ok">Within every limit of the mandate.</li>';
+    const ICON = { pass: '✓', review: '!', block: '✕', skip: '–' };
+    const extra = o.reasons.filter((r) => r.code === 'VAULT_REFUSED').map((r) => `<li class="review"><span class="ic">!</span><div><b>PayPal</b> <span class="d">${esc(r.message)}</span></div></li>`).join('');
+    const reasons = o.checks
+      ? `<ul class="checks">${o.checks.map((c) => `<li class="${c.status}"><span class="ic">${ICON[c.status]}</span><div><b>${esc(c.label)}</b> <span class="d">${esc(c.detail)}</span></div></li>`).join('')}${extra}</ul>`
+      : `<ul class="reasons">${o.reasons.map((r) => `<li class="${r.severity}">${esc(r.message)}</li>`).join('') || '<li class="ok">Within every limit of the mandate.</li>'}</ul>`;
+    const rc = o.receipt || {};
     el.innerHTML = `
       <div>
         <h3>${esc(o.id)} · ${esc(o.supplierName)} <span class="status s-${o.status}">${STATUS_LABEL[o.status] || o.status}</span></h3>
@@ -185,8 +214,10 @@
         <tr><td colspan="4"><b>Total</b></td><td class="num"><b>${eur(o.total)}</b></td></tr></tbody></table></div>
       </div>
       <div>
-        <h3>Mandate decision: ${esc(o.decision.replace('_', ' '))}</h3>
-        <ul class="reasons">${reasons}</ul>
+        <h3>Decision receipt: ${esc({ auto: 'paid automatically', needs_approval: 'needs a human', blocked: 'blocked' }[o.decision] || o.decision)}</h3>
+        <div class="receipt-meta"><span>${esc(rc.agentName || o.createdBy)}</span><span>mandate v${esc(rc.mandateVersion || 1)}</span><span>${rc.evaluatedAt ? new Date(rc.evaluatedAt).toLocaleString('en-GB') : ''}</span></div>
+        ${rc.rationale ? `<div class="rationale"><span class="eyebrow">Agent's reason</span><br>${esc(rc.rationale)}</div>` : ''}
+        ${reasons}
         <div class="ids">
           ${o.paypal.orderId ? `<span>PayPal order ${esc(o.paypal.orderId)}</span>` : ''}
           ${o.paypal.authorizationId ? `<span>Authorization ${esc(o.paypal.authorizationId)}</span>` : ''}
@@ -228,6 +259,79 @@
     notice('Mandate saved. The agent uses the new limits on its next run.');
   });
 
+  // ---------- plain-English mandate ----------
+  $('plain-text').addEventListener('input', (e) => (e.target.dataset.dirty = '1'));
+  $('parse').onclick = act(async () => {
+    const text = $('plain-text').value.trim();
+    $('parse-status').textContent = 'Reading your mandate…';
+    $('parse').disabled = true;
+    try {
+      const r = await api('POST', '/api/mandate/parse', { text });
+      const box = $('diff');
+      box.hidden = false;
+      if (!r.changes.length) {
+        box.innerHTML = '<div class="foot">No changes. Your mandate already says this.</div>';
+        $('parse-status').textContent = '';
+        return;
+      }
+      box.innerHTML = `<div style="overflow-x:auto"><table><thead><tr><th>Rule</th><th>Now</th><th>After</th></tr></thead><tbody>
+        ${r.changes.map((c) => `<tr><td>${esc(c.label)}</td><td class="from">${esc(c.from)}</td><td class="to">${esc(c.to)}</td></tr>`).join('')}</tbody></table></div>
+        ${r.warnings.map((w) => `<div class="warn">${esc(w)}</div>`).join('')}
+        <div class="foot"><button class="btn small" id="apply">Apply ${r.changes.length} change${r.changes.length > 1 ? 's' : ''}</button><button class="btn ghost small" id="discard">Discard</button><span class="muted">Read by ${r.engine === 'claude' ? 'Claude' : 'the rules parser'}. Nothing changes until you apply.</span></div>`;
+      $('parse-status').textContent = '';
+      $('apply').onclick = act(async () => {
+        await api('PUT', '/api/mandate', { ...r.proposed, plainText: text });
+        delete $('plain-text').dataset.dirty;
+        box.hidden = true;
+        notice('Mandate updated. Agents use the new rules from their next purchase.');
+      });
+      $('discard').onclick = () => { box.hidden = true; delete $('plain-text').dataset.dirty; render(); };
+    } finally {
+      $('parse').disabled = false;
+      if ($('parse-status').textContent === 'Reading your mandate…') $('parse-status').textContent = '';
+    }
+  });
+
+  $('kill').onclick = act(async () => {
+    if (state.mandate.active) {
+      const r = await api('POST', '/api/kill');
+      notice(`All agents stopped.${r.voided ? ` ${r.voided} open PayPal authorization${r.voided > 1 ? 's' : ''} voided.` : ''}`, true);
+    } else {
+      await api('PUT', '/api/mandate', { active: true });
+      notice('Agents resumed.');
+    }
+  });
+
+  $('copy-mcp').onclick = async () => {
+    try { await navigator.clipboard.writeText($('mcp-config').textContent); notice('MCP config copied.'); }
+    catch (_) { const r = document.createRange(); r.selectNodeContents($('mcp-config')); getSelection().removeAllRanges(); getSelection().addRange(r); }
+  };
+
+  // ---------- toasts: every new agent payment gets an Undo ----------
+  const seenAuth = new Set();
+  let firstState = true;
+  function toastNew(list) {
+    for (const o of list) {
+      if (o.status !== 'AUTHORIZED' || seenAuth.has(o.id)) continue;
+      seenAuth.add(o.id);
+      if (firstState) continue;
+      const t = document.createElement('div');
+      t.className = 'toast';
+      t.innerHTML = `<div>${esc(o.createdBy)} paid ${eur(o.total)} to ${esc(o.supplierName)}<small data-left></small></div><button class="btn">Undo</button>`;
+      t.querySelector('button').onclick = act(async () => { await api('POST', `/api/orders/${o.id}/undo`); t.remove(); notice(`${o.id} undone. No money moved.`); });
+      $('toasts').appendChild(t);
+      const tick = () => {
+        const cur = state.orders.find((x) => x.id === o.id);
+        const left = cur ? secondsLeft(cur) : 0;
+        if (!cur || cur.status !== 'AUTHORIZED' || left <= 0) { t.remove(); clearInterval(iv); return; }
+        t.querySelector('[data-left]').textContent = `Undo open for ${left}s`;
+      };
+      const iv = setInterval(tick, 1000);
+      tick();
+    }
+    firstState = false;
+  }
+
   // ---------- agent ----------
   document.querySelectorAll('#chips .chip').forEach((b) => (b.onclick = () => ($('instruction').value = b.textContent)));
   $('run-form').onsubmit = act(async (e) => {
@@ -247,6 +351,10 @@
       cls += ' ' + t.decision;
       label = { auto: 'Auto-pay', needs_approval: 'Needs you', blocked: 'Blocked' }[t.decision];
       if (t.reasons && t.reasons.length) extra = `<ul>${t.reasons.map((r) => `<li>${esc(r.message)}</li>`).join('')}</ul>`;
+      if (t.checks) {
+        const passed = t.checks.filter((c) => c.status === 'pass').length;
+        extra += `<div class="chipline"><span>${passed}/${t.checks.filter((c) => c.status !== 'skip').length} rules passed</span>${t.checks.filter((c) => c.status === 'review' || c.status === 'block').map((c) => `<span class="${c.status}">${esc(c.label)}</span>`).join('')}</div>`;
+      }
     }
     if (t.kind === 'start') label = t.engine === 'claude' ? 'Claude' : 'Planner';
     li.className = cls;

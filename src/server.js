@@ -4,7 +4,8 @@ const { Store } = require('./store');
 const { createPayPal } = require('./paypal');
 const { Orders } = require('./orders');
 const { runAgent, stockView, mandateView } = require('./agent');
-const { spentThisMonth } = require('./policy');
+const { spentThisMonth, evaluate } = require('./policy');
+const { parseMandate } = require('./mandate-text');
 
 function createApp(opts = {}) {
   const port = opts.port || process.env.PORT || 3000;
@@ -46,6 +47,7 @@ function createApp(opts = {}) {
       mode: { paypal: paypal.mode, agent: process.env.ANTHROPIC_API_KEY ? 'claude' : 'rules', model: process.env.ANTHROPIC_API_KEY ? (process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5') : null },
       mandate: { ...s.mandate, view: mandateView(s), spent: spentThisMonth(s) },
       suppliers: s.suppliers,
+      agents: (s.agents || []).map((a) => ({ ...a, spent: spentThisMonth(s, new Date(), a.id) })),
       stock: stockView(s),
       orders: s.orders,
       totals: orders.totals(),
@@ -59,7 +61,7 @@ function createApp(opts = {}) {
     try {
       await fn(req, res);
     } catch (e) {
-      res.status(e.status && e.status < 500 ? 400 : 400).json({ error: e.message });
+      res.status(e.status === 401 ? 401 : 400).json({ error: e.message });
     }
   };
 
@@ -78,20 +80,20 @@ function createApp(opts = {}) {
     send('state', snapshot());
     const emit = (step) => send('trace', { runId, at: new Date().toISOString(), ...step });
     try {
-      store.audit('Agent', 'agent.run', instruction ? `Run started: "${instruction}"` : 'Run started.', runId);
+      store.audit('Reorder agent', 'agent.run', instruction ? `Run started: "${instruction}"` : 'Run started.', runId);
       await runAgent({
         state: store.state,
         instruction,
         emit,
         onProposal: (v, input) => {
-          const order = orders.create(v, input, 'Agent');
+          const order = orders.create(v, input);
           if (order.status === 'PAYING') pending.push(orders.payAuto(order));
         },
       });
       await Promise.all(pending);
     } catch (e) {
       emit({ kind: 'error', text: e.message });
-      store.audit('Agent', 'agent.error', e.message, runId);
+      store.audit('Reorder agent', 'agent.error', e.message, runId);
     } finally {
       running = false;
       store.save();
@@ -117,8 +119,81 @@ function createApp(opts = {}) {
     if (typeof b.active === 'boolean') m.active = b.active;
     if (Array.isArray(b.allowedSupplierIds)) m.allowedSupplierIds = b.allowedSupplierIds.filter((id) => store.supplier(id));
     if (Array.isArray(b.allowedCategories)) m.allowedCategories = b.allowedCategories.map(String);
+    if (typeof b.plainText === 'string') m.plainText = b.plainText.slice(0, 1000);
+    m.version = (m.version || 1) + 1;
     store.audit(store.state.company.buyer, 'mandate.updated', `Mandate updated: €${m.monthlyCap}/month, €${m.perOrderCap}/order, auto-pay below €${m.autoApproveBelow}${m.active ? '' : ', PAUSED'}.`);
     store.save();
+    res.json({ ok: true });
+  }));
+
+  // Plain-English mandate: returns proposed changes for the buyer to confirm.
+  app.post('/api/mandate/parse', wrap(async (req, res) => {
+    const text = String((req.body && req.body.text) || '').trim().slice(0, 1000);
+    if (!text) throw new Error('Describe the mandate in a sentence or two.');
+    res.json(await parseMandate(text, store.state));
+  }));
+
+  // Kill switch: pause all agents and void every open authorization.
+  app.post('/api/kill', wrap(async (req, res) => {
+    res.json(await orders.killSwitch(store.state.company.buyer));
+  }));
+
+  app.patch('/api/agents/:id', wrap(async (req, res) => {
+    const a = (store.state.agents || []).find((x) => x.id === req.params.id);
+    if (!a) throw new Error('Unknown agent.');
+    if (typeof req.body.active === 'boolean') a.active = req.body.active;
+    if (req.body.monthlyCap !== undefined) {
+      const v = Number(req.body.monthlyCap);
+      if (!Number.isFinite(v) || v < 0) throw new Error('Agent budget must be a positive number.');
+      a.monthlyCap = v;
+    }
+    store.audit(store.state.company.buyer, 'agent.updated', `${a.name}: ${a.active ? 'active' : 'paused'}, budget €${a.monthlyCap}/month.`);
+    store.save();
+    res.json(a);
+  }));
+
+  // ---- external agents (used by the MCP server) ----
+  const agentAuth = (req) => {
+    const need = process.env.MANDATE_AGENT_TOKEN;
+    if (need && req.get('authorization') !== `Bearer ${need}`) {
+      const e = new Error('Missing or wrong agent token.');
+      e.status = 401;
+      throw e;
+    }
+    const a = (store.state.agents || []).find((x) => x.id === req.params.id);
+    if (!a) throw new Error(`Unknown agent "${req.params.id}".`);
+    return a;
+  };
+  app.get('/api/agents/:id/context', wrap(async (req, res) => {
+    const a = agentAuth(req);
+    res.json({ agent: a, mandate: mandateView(store.state), agentSpent: spentThisMonth(store.state, new Date(), a.id), catalogue: stockView(store.state) });
+  }));
+  app.post('/api/agents/:id/check', wrap(async (req, res) => {
+    agentAuth(req);
+    const v = evaluate(store.state, { agentId: req.params.id, lines: req.body.lines, note: req.body.note });
+    res.json({ decision: v.decision, total: v.total, checks: v.checks, budget: v.budget });
+  }));
+  app.post('/api/agents/:id/purchase', wrap(async (req, res) => {
+    const a = agentAuth(req);
+    const v = evaluate(store.state, { agentId: a.id, lines: req.body.lines, note: req.body.note });
+    send('trace', { runId: 'external', at: new Date().toISOString(), kind: 'proposal', decision: v.decision, total: v.total,
+      text: `${a.name} requested ${v.lines.map((l) => `${l.qty.toLocaleString('en')} × ${l.sku}`).join(', ') || 'nothing valid'} for €${v.total.toFixed(2)}.`, reasons: v.reasons, checks: v.checks });
+    const order = orders.create(v, { note: req.body.note || '' });
+    if (order.status === 'PAYING') await orders.payAuto(order);
+    res.json({ orderId: order.id, status: order.status, decision: v.decision, total: v.total, checks: v.checks, undoUntil: order.undoUntil });
+  }));
+  app.get('/api/agents/:id/orders/:orderId', wrap(async (req, res) => {
+    agentAuth(req);
+    const o = store.order(req.params.orderId);
+    if (!o || o.agentId !== req.params.id) throw new Error('Order not found for this agent.');
+    res.json({ orderId: o.id, status: o.status, total: o.total, supplier: o.supplierName, undoUntil: o.undoUntil });
+  }));
+
+  // ---- PayPal webhooks ----
+  app.post('/paypal/webhook', express.json({ type: '*/*' }), wrap(async (req, res) => {
+    const ok = await paypal.verifyWebhook(req.headers, req.body);
+    if (!ok) return res.status(400).json({ error: 'Webhook signature not verified.' });
+    orders.reconcile(req.body);
     res.json({ ok: true });
   }));
 
@@ -142,6 +217,7 @@ function createApp(opts = {}) {
     const r = await paypal.createPaymentToken(token);
     store.state.mandate.vaultId = r.vaultId;
     store.state.mandate.vaultLabel = r.label;
+    store.state.mandate.vaultBlocked = false;
     store.audit(store.state.company.buyer, 'vault.saved', `PayPal saved for the mandate (${r.label}). The agent can now pay within the limits.`);
     store.save();
     res.redirect('/?notice=paypal-connected');

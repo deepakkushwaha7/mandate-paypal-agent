@@ -17,6 +17,7 @@
     <div><strong>Mandate</strong><span id="company">·</span></div>
   </div>
   <div class="modes" id="modes"></div>
+  <button class="btn kill small" id="kill" title="Pause every agent and void all open PayPal authorizations">Stop all agents</button>
   <button class="btn ghost small" id="reset" title="Restore the demo data">Reset demo</button>
 </header>
 
@@ -36,8 +37,14 @@
   </section>
 
   <section class="card mandate" aria-labelledby="h-mandate">
-    <div class="card-head"><h2 id="h-mandate">Spending mandate</h2><button class="btn ghost small" id="edit-mandate">Edit limits</button></div>
+    <div class="card-head"><h2 id="h-mandate">Spending mandate</h2><span class="muted" id="mversion"></span></div>
     <div class="pp" id="pp"></div>
+    <div class="plain">
+      <label for="plain-text" class="eyebrow">In your words</label>
+      <textarea id="plain-text" rows="2"></textarea>
+      <div class="row-inline"><button class="btn small" id="parse">Preview changes</button><button class="btn ghost small" id="edit-mandate">Edit limits by hand</button><span class="muted" id="parse-status" aria-live="polite"></span></div>
+      <div id="diff" class="diff" hidden></div>
+    </div>
     <ul class="rules" id="rules"></ul>
     <form id="mandate-form" class="mform" hidden>
       <label>Monthly cap (€)<input id="f-monthly" type="number" min="0" step="50"></label>
@@ -66,6 +73,16 @@
     <ol class="trace" id="trace" aria-live="polite"><li class="empty">The agent's reasoning and every mandate decision appear here.</li></ol>
   </section>
 
+  <section class="card agents" aria-labelledby="h-agents">
+    <div class="card-head"><h2 id="h-agents">Agents with access</h2><span class="muted">each has its own budget</span></div>
+    <ul class="agent-list" id="agent-list"></ul>
+    <details class="mcp"><summary>Connect any agent with MCP</summary>
+      <p class="muted">Add this to Claude Desktop (Settings → Developer → Edit config). The agent can read its limits, dry-run and buy. It can never change the mandate or approve its own exceptions.</p>
+      <pre id="mcp-config"></pre>
+      <button class="btn ghost small" id="copy-mcp">Copy config</button>
+    </details>
+  </section>
+
   <section class="card stock" aria-labelledby="h-stock">
     <div class="card-head"><h2 id="h-stock">Stock cover</h2><span class="muted">days left vs. reorder point</span></div>
     <ul class="cover" id="cover"></ul>
@@ -83,6 +100,7 @@
   </section>
 </main>
 
+<div class="toasts" id="toasts" aria-live="polite"></div>
 <script src="/vendor/ag-grid/dist/ag-grid-community.min.noStyle.js"></script>
 <script src="/app.js"></script>
 </body>

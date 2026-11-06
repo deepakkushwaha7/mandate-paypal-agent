@@ -52,6 +52,9 @@ function seed() {
     undoWindowSec: 60,
     vaultId: null,
     vaultLabel: null,
+    vaultBlocked: false,
+    version: 1,
+    plainText: 'Up to €2,500 a month and €1,500 per order. Pay anything under €400 on your own. Only packaging and labels, from Boxly, Tissu Print and LabelWorks. Ask me if a supplier raises prices more than 5%.',
     // Spend already committed this month before the demo starts.
     openingSpend: 640,
   };
@@ -63,6 +66,10 @@ function seed() {
     inventory,
     priceHistory,
     mandate,
+    agents: [
+      { id: 'reorder-agent', name: 'Reorder agent', kind: 'Built-in · Claude', active: true, monthlyCap: 2000 },
+      { id: 'claude-desktop', name: 'Claude Desktop', kind: 'External · MCP', active: true, monthlyCap: 300 },
+    ],
     orders: [],
     audit: [
       { at: new Date(now - 2 * day).toISOString(), actor: 'Priya', type: 'mandate.updated', message: 'Mandate created: €2,500/month, auto-pay below €400.' },

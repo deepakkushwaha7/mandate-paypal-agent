@@ -220,13 +220,14 @@ async function runAgent({ state, instruction, emit, onProposal }) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   const model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5';
   const submit = (input) => {
-    const v = evaluate(state, input);
+    const v = evaluate(state, { ...input, agentId: 'reorder-agent' });
     emit({
       kind: 'proposal',
       decision: v.decision,
       total: v.total,
       text: `Proposed ${v.lines.map((l) => `${l.qty.toLocaleString('en')} × ${l.sku}`).join(', ') || 'nothing valid'} for €${v.total.toFixed(2)}.`,
       reasons: v.reasons,
+      checks: v.checks,
     });
     onProposal(v, input);
     return v;

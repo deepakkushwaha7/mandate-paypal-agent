@@ -174,6 +174,22 @@ class PayPalRest {
     return { status: 'VOIDED' };
   }
 
+  // Verifies a webhook with PayPal before the app trusts it.
+  async verifyWebhook(headers, event) {
+    const webhookId = process.env.PAYPAL_WEBHOOK_ID;
+    if (!webhookId) return false;
+    const r = await this.call('POST', '/v1/notifications/verify-webhook-signature', {
+      auth_algo: headers['paypal-auth-algo'],
+      cert_url: headers['paypal-cert-url'],
+      transmission_id: headers['paypal-transmission-id'],
+      transmission_sig: headers['paypal-transmission-sig'],
+      transmission_time: headers['paypal-transmission-time'],
+      webhook_id: webhookId,
+      webhook_event: event,
+    });
+    return r.verification_status === 'SUCCESS';
+  }
+
   async refundCapture(captureId, order) {
     const r = await this.call('POST', `/v2/payments/captures/${captureId}/refund`, {
       note_to_payer: `Undo of agent order ${order.id}`,
@@ -222,8 +238,13 @@ class PayPalSimulator {
     return { vaultId, label: 'buyer-sandbox@northwind.example' };
   }
 
+  async verifyWebhook() {
+    return false;
+  }
+
   async authorizeWithVault({ vaultId, order, catalogue }) {
     if (!vaultId) throw new PayPalError('vault_id is required', 422, {});
+    if (this.refuseVault) throw new PayPalError('PayPal POST /v2/checkout/orders failed (422): NOT_ENABLED_TO_VAULT_PAYMENT_SOURCE: The merchant is not enabled to vault this payment source.', 422, {});
     const pu = purchaseUnit(order, catalogue);
     const orderId = this.id('ORD-');
     const authorizationId = this.id('AUTH-');
