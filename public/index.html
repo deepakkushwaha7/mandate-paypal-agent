@@ -2,115 +2,240 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mandate · agentic reordering on PayPal</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mandate — spending rules for AI agents that pay with PayPal</title>
+<meta name="description" content="Let AI agents pay suppliers through PayPal, only within rules you set. Every payment explained, every payment undoable.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230A5CFF'/%3E%3Cpath d='M9 22V10l7 7 7-7v12' stroke='white' stroke-width='2.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="/vendor/ag-grid/styles/ag-grid.min.css">
 <link rel="stylesheet" href="/vendor/ag-grid/styles/ag-theme-quartz-no-font.min.css">
 <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-<header class="top">
-  <div class="brand">
-    <svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true"><rect x="2" y="2" width="28" height="28" rx="7" fill="var(--accent)"/><path d="M9 22V10l7 7 7-7v12" stroke="var(--accent-ink)" stroke-width="2.6" fill="none" stroke-linejoin="round" stroke-linecap="round"/></svg>
-    <div><strong>Mandate</strong><span id="company">·</span></div>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="topbar-in">
+    <a class="brand" href="/" aria-label="Mandate home">
+      <svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--primary)"/><path d="M9 22V10l7 7 7-7v12" stroke="#fff" stroke-width="2.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>Mandate</span>
+    </a>
+    <span class="org" id="org">Northwind Coffee Co.</span>
+    <div class="env" id="env" aria-label="Environment"></div>
+    <div class="top-actions">
+      <button class="btn btn-ghost btn-sm" id="tour-btn" type="button">Take the tour</button>
+      <button class="btn btn-ghost btn-sm" id="reset" type="button">Restart demo</button>
+      <button class="btn btn-danger btn-sm" id="kill" type="button">Stop all agents</button>
+    </div>
   </div>
-  <div class="modes" id="modes"></div>
-  <button class="btn kill small" id="kill" title="Pause every agent and void all open PayPal authorizations">Stop all agents</button>
-  <button class="btn ghost small" id="reset" title="Restore the demo data">Reset demo</button>
 </header>
 
-<div id="notice" class="notice" hidden role="status"></div>
-<div id="killbar" class="killbar" hidden role="alertdialog" aria-labelledby="kill-q">
-  <p id="kill-q"></p>
-  <div class="row-inline"><button class="btn danger" id="kill-confirm">Stop all agents</button><button class="btn ghost" id="kill-cancel">Cancel</button></div>
+<div class="banner" id="paused" hidden role="status">
+  <div class="banner-in"><strong>All agents are stopped.</strong> No agent can spend until you resume. <button class="btn btn-sm" id="resume" type="button">Resume agents</button></div>
 </div>
-<ol id="steps" class="steps" aria-label="Get started"></ol>
 
-<main class="layout">
-  <section class="card budget" aria-labelledby="h-budget">
-    <div class="card-head"><h2 id="h-budget">This month</h2><span class="muted" id="month"></span></div>
-    <div class="big"><span id="spent">€0</span><span class="muted"> of <span id="cap">€0</span></span></div>
-    <div class="meter" id="meter" role="img" aria-label="Monthly spend"><i class="m-spent"></i><i class="m-held"></i><i class="m-wait"></i></div>
-    <dl class="legend">
-      <div><dt><i class="sw spent"></i>Paid</dt><dd id="t-paid">€0</dd></div>
-      <div><dt><i class="sw held"></i>Held, undo open</dt><dd id="t-held">€0</dd></div>
-      <div><dt><i class="sw wait"></i>Waiting for you</dt><dd id="t-wait">€0</dd></div>
-      <div><dt>Left</dt><dd id="t-left">€0</dd></div>
-    </dl>
-  </section>
-
-  <section class="card mandate" aria-labelledby="h-mandate">
-    <div class="card-head"><h2 id="h-mandate">Spending mandate</h2><span class="muted" id="mversion"></span></div>
-    <div class="pp" id="pp"></div>
-    <div class="plain">
-      <label for="plain-text" class="eyebrow">In your words</label>
-      <textarea id="plain-text" rows="2"></textarea>
-      <div class="row-inline"><button class="btn small" id="parse">Preview changes</button><button class="btn ghost small" id="edit-mandate">Edit limits by hand</button><span class="muted" id="parse-status" aria-live="polite"></span></div>
-      <div id="diff" class="diff" hidden></div>
-    </div>
-    <ul class="rules" id="rules"></ul>
-    <form id="mandate-form" class="mform" hidden>
-      <label>Monthly cap (€)<input id="f-monthly" type="number" min="0" step="50"></label>
-      <label>Per-order cap (€)<input id="f-perorder" type="number" min="0" step="50"></label>
-      <label>Auto-pay below (€)<input id="f-auto" type="number" min="0" step="10"></label>
-      <label>Max price rise (%)<input id="f-drift" type="number" min="0" max="100" step="1"></label>
-      <label>Undo window (s)<input id="f-undo" type="number" min="10" step="10"></label>
-      <label class="check"><input id="f-active" type="checkbox"> Agent may spend</label>
-      <fieldset><legend>Allowed suppliers</legend><div id="f-suppliers" class="checks"></div></fieldset>
-      <fieldset><legend>Allowed categories</legend><div id="f-cats" class="checks"></div></fieldset>
-      <div class="row"><button class="btn" type="submit">Save mandate</button><button class="btn ghost" type="button" id="cancel-mandate">Cancel</button></div>
-    </form>
-  </section>
-
-  <section class="card agent" aria-labelledby="h-agent">
-    <div class="card-head"><h2 id="h-agent">Purchasing agent</h2><span class="muted" id="engine"></span></div>
-    <form id="run-form" class="run">
-      <label for="instruction" class="sr">Instruction for the agent</label>
-      <textarea id="instruction" rows="2" placeholder="Optional: tell the agent about demand, e.g. 'Black Friday campaign starts in 2 weeks'"></textarea>
-      <div class="chips" id="chips">
-        <button type="button" class="chip">Black Friday campaign starts in 2 weeks</button>
-        <button type="button" class="chip">Also restock canvas totes for the pop-up</button>
+<main id="main" class="page">
+  <section class="welcome" id="welcome" hidden aria-labelledby="welcome-title">
+    <div class="welcome-copy">
+      <p class="eyebrow" id="welcome-eyebrow">Live demo · PayPal sandbox · Fake money</p>
+      <h1 id="welcome-title">Let AI agents pay — only within your rules.</h1>
+      <p class="lede">Mandate sits between your AI agents and PayPal. Agents can buy what you need, but every payment is checked against rules you set, explained, and can be undone.</p>
+      <div class="row">
+        <button class="btn btn-primary" id="welcome-tour" type="button">Take the 2-minute tour</button>
+        <button class="btn btn-ghost" id="welcome-close" type="button">Explore on my own</button>
       </div>
-      <button class="btn" id="run" type="submit">Run reorder check</button>
-    </form>
-    <ol class="trace" id="trace" aria-live="polite"><li class="empty">The agent's reasoning and every mandate decision appear here.</li></ol>
+    </div>
+    <ol class="steps" id="steps" aria-label="Get started"></ol>
   </section>
 
-  <section class="card agents" aria-labelledby="h-agents">
-    <div class="card-head"><h2 id="h-agents">Agents with access</h2><span class="muted">each has its own budget</span></div>
-    <ul class="agent-list" id="agent-list"></ul>
-    <details class="mcp"><summary>Connect any agent with MCP</summary>
-      <p class="muted">Add this to Claude Desktop (Settings → Developer → Edit config). The agent can read its limits, dry-run and buy. It can never change the mandate or approve its own exceptions.</p>
-      <pre id="mcp-config"></pre>
-      <button class="btn ghost small" id="copy-mcp">Copy config</button>
-    </details>
-  </section>
+  <div class="layout">
+    <div class="col-main">
+      <section class="card" id="card-agent" aria-labelledby="h-agent">
+        <header class="card-head">
+          <div>
+            <h2 id="h-agent">Purchasing agent</h2>
+            <p class="sub">Checks stock every morning and reorders what is running low.</p>
+          </div>
+          <span class="tag" id="ai-tag"></span>
+        </header>
+        <form class="ask" id="run-form">
+          <label for="instruction" class="label">Anything the agent should know? <span class="muted">(optional)</span></label>
+          <div class="ask-row">
+            <input id="instruction" type="text" autocomplete="off" maxlength="300" placeholder="e.g. Black Friday campaign starts in 2 weeks">
+            <button class="btn btn-primary" id="run" type="submit">Run agent</button>
+          </div>
+          <div class="chips" id="chips">
+            <button type="button" class="chip">Black Friday campaign starts in 2 weeks</button>
+            <button type="button" class="chip">Also restock canvas totes for the pop-up</button>
+          </div>
+        </form>
+        <div class="feed-wrap">
+          <ol class="feed" id="feed" aria-live="polite"></ol>
+          <p class="empty" id="feed-empty">The agent's reasoning and every decision your rules make will appear here.</p>
+        </div>
+      </section>
 
-  <section class="card stock" aria-labelledby="h-stock">
-    <div class="card-head"><h2 id="h-stock">Stock cover</h2><span class="muted">days left vs. reorder point</span></div>
-    <ul class="cover" id="cover"></ul>
-  </section>
+      <section class="card card-attn" id="card-inbox" hidden aria-labelledby="h-inbox">
+        <header class="card-head">
+          <div>
+            <h2 id="h-inbox">Waiting for you</h2>
+            <p class="sub">These went past a rule, so the agent needs your OK.</p>
+          </div>
+          <span class="count" id="inbox-count"></span>
+        </header>
+        <ul class="inbox" id="inbox"></ul>
+      </section>
 
-  <section class="card inbox" id="inbox" aria-labelledby="h-inbox" hidden>
-    <div class="card-head"><h2 id="h-inbox">Needs you</h2><span class="muted" id="inbox-count"></span></div>
-    <ul class="inbox-list" id="inbox-list"></ul>
-  </section>
+      <section class="card" id="card-payments" aria-labelledby="h-payments">
+        <header class="card-head">
+          <div>
+            <h2 id="h-payments">Payments</h2>
+            <p class="sub">Every payment an agent asked for. Click one to see why it was allowed.</p>
+          </div>
+          <input class="search" id="search" type="search" placeholder="Search" aria-label="Search payments">
+        </header>
+        <div class="filters" id="filters" role="tablist" aria-label="Filter payments"></div>
+        <div id="grid" class="grid ag-theme-quartz"></div>
+      </section>
 
-  <section class="card orders" aria-labelledby="h-orders">
-    <div class="card-head"><h2 id="h-orders">Orders</h2><span class="muted" id="order-count"></span></div>
-    <div id="grid" class="grid ag-theme-quartz"></div>
-    <div id="detail" class="detail" hidden></div>
-  </section>
+      <section class="card" id="card-log" aria-labelledby="h-log">
+        <header class="card-head">
+          <div><h2 id="h-log">Activity log</h2><p class="sub">Every agent decision and PayPal event, newest first.</p></div>
+        </header>
+        <ol class="log" id="log"></ol>
+      </section>
+    </div>
 
-  <section class="card audit" aria-labelledby="h-audit">
-    <div class="card-head"><h2 id="h-audit">Audit log</h2><span class="muted">every agent and payment action</span></div>
-    <ol class="log" id="audit"></ol>
-  </section>
+    <aside class="col-side">
+      <section class="card" id="card-budget" aria-labelledby="h-budget">
+        <header class="card-head tight"><h2 id="h-budget">This month</h2><span class="muted" id="month"></span></header>
+        <div class="big"><span id="spent">€0</span> <span class="of">of <span id="cap">€0</span></span></div>
+        <div class="meter" id="meter" role="img"><i class="m-paid"></i><i class="m-hold"></i><i class="m-wait"></i></div>
+        <dl class="legend">
+          <div><dt><i class="dot paid"></i>Paid</dt><dd id="t-paid">€0</dd></div>
+          <div><dt><i class="dot hold"></i>On hold, can undo</dt><dd id="t-hold">€0</dd></div>
+          <div><dt><i class="dot wait"></i>Waiting for you</dt><dd id="t-wait">€0</dd></div>
+          <div><dt>Left to spend</dt><dd id="t-left">€0</dd></div>
+        </dl>
+      </section>
+
+      <section class="card" id="card-paypal" aria-labelledby="h-paypal">
+        <header class="card-head tight"><h2 id="h-paypal">Payment method</h2></header>
+        <div id="paypal-state"></div>
+      </section>
+
+      <section class="card" id="card-rules" aria-labelledby="h-rules">
+        <header class="card-head tight">
+          <h2 id="h-rules">Your rules</h2>
+          <button class="btn btn-ghost btn-sm" id="edit-rules" type="button">Edit</button>
+        </header>
+        <blockquote class="quote" id="rules-text"></blockquote>
+        <dl class="rules" id="rules"></dl>
+        <p class="foot muted" id="rules-version"></p>
+      </section>
+
+      <section class="card" id="card-agents" aria-labelledby="h-agents">
+        <header class="card-head tight">
+          <h2 id="h-agents">Agents</h2>
+          <button class="btn btn-ghost btn-sm" id="connect-agent" type="button">Connect an agent</button>
+        </header>
+        <ul class="agents" id="agents"></ul>
+      </section>
+
+      <section class="card" id="card-stock" aria-labelledby="h-stock">
+        <header class="card-head tight"><h2 id="h-stock">Stock</h2><span class="muted">days left</span></header>
+        <ul class="stock" id="stock"></ul>
+      </section>
+    </aside>
+  </div>
+
+  <footer class="foot-page">
+    <span>Mandate · Built for the PayPal AI Hackathon 2026</span>
+    <a href="https://github.com/deepakkushwaha7/mandate-paypal-agent" rel="noopener" target="_blank">Source on GitHub</a>
+  </footer>
 </main>
 
+<!-- Payment detail drawer -->
+<div class="scrim" id="scrim" hidden></div>
+<aside class="drawer" id="drawer" hidden role="dialog" aria-modal="true" aria-labelledby="d-title">
+  <header class="drawer-head">
+    <div>
+      <p class="eyebrow" id="d-eyebrow"></p>
+      <h2 id="d-title"></h2>
+    </div>
+    <button class="icon-btn" id="d-close" type="button" aria-label="Close">✕</button>
+  </header>
+  <div class="drawer-body" id="d-body"></div>
+</aside>
+
+<!-- Modals -->
+<div class="modal" id="m-rules" hidden role="dialog" aria-modal="true" aria-labelledby="mr-title">
+  <div class="modal-card">
+    <header class="drawer-head"><h2 id="mr-title">Edit your rules</h2><button class="icon-btn" data-close type="button" aria-label="Close">✕</button></header>
+    <div class="modal-body">
+      <label class="label" for="plain">Describe your rules in plain English</label>
+      <textarea id="plain" rows="4"></textarea>
+      <p class="hint">AI turns this into exact rules. You'll see every change before it applies.</p>
+      <div class="row"><button class="btn btn-primary" id="parse" type="button">Preview changes</button><span class="muted" id="parse-status" aria-live="polite"></span></div>
+      <div id="diff" class="diff"></div>
+      <details class="advanced">
+        <summary>Or set the numbers yourself</summary>
+        <form id="rules-form" class="form-grid">
+          <label>Monthly budget (€)<input id="f-monthly" type="number" min="0" step="50"></label>
+          <label>Largest single order (€)<input id="f-perorder" type="number" min="0" step="50"></label>
+          <label>Pay without asking below (€)<input id="f-auto" type="number" min="0" step="10"></label>
+          <label>Ask me if a price rises more than (%)<input id="f-drift" type="number" min="0" max="100" step="1"></label>
+          <label>Undo window (seconds)<input id="f-undo" type="number" min="10" step="10"></label>
+          <fieldset><legend>Approved suppliers</legend><div id="f-suppliers" class="checkboxes"></div></fieldset>
+          <fieldset><legend>Approved categories</legend><div id="f-cats" class="checkboxes"></div></fieldset>
+          <div class="row"><button class="btn btn-primary" type="submit">Save rules</button></div>
+        </form>
+      </details>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="m-kill" hidden role="alertdialog" aria-modal="true" aria-labelledby="mk-title">
+  <div class="modal-card narrow">
+    <div class="modal-body">
+      <h2 id="mk-title">Stop all agents?</h2>
+      <p id="kill-q"></p>
+      <div class="row end"><button class="btn btn-ghost" data-close type="button">Cancel</button><button class="btn btn-danger" id="kill-confirm" type="button">Stop all agents</button></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="m-connect" hidden role="dialog" aria-modal="true" aria-labelledby="mc-title">
+  <div class="modal-card">
+    <header class="drawer-head"><h2 id="mc-title">Connect an agent</h2><button class="icon-btn" data-close type="button" aria-label="Close">✕</button></header>
+    <div class="modal-body">
+      <h3>Claude Desktop, Cursor or any MCP client</h3>
+      <p class="muted">Add this to your MCP config. The agent can read its limits, check a purchase and buy. It can never change your rules or approve itself.</p>
+      <pre class="code" id="mcp-config"></pre>
+      <div class="row"><button class="btn btn-ghost btn-sm" data-copy="mcp-config" type="button">Copy config</button></div>
+      <h3>PayPal Agent Toolkit</h3>
+      <p class="muted">Already using PayPal's Agent Toolkit? Wrap it, and every refund, invoice or order is checked against these rules first.</p>
+      <pre class="code" id="toolkit-snippet"></pre>
+      <div class="row"><button class="btn btn-ghost btn-sm" data-copy="toolkit-snippet" type="button">Copy code</button></div>
+    </div>
+  </div>
+</div>
+
+<!-- Guided tour -->
+<div class="tour" id="tour" hidden>
+  <div class="tour-hole" id="tour-hole"></div>
+  <div class="tour-pop" id="tour-pop" role="dialog" aria-modal="true" aria-labelledby="tour-title">
+    <p class="eyebrow" id="tour-step"></p>
+    <h3 id="tour-title"></h3>
+    <p id="tour-text"></p>
+    <div class="row end"><button class="btn btn-ghost btn-sm" id="tour-skip" type="button">Skip</button><button class="btn btn-ghost btn-sm" id="tour-back" type="button">Back</button><button class="btn btn-primary btn-sm" id="tour-next" type="button">Next</button></div>
+  </div>
+</div>
+
 <div class="toasts" id="toasts" aria-live="polite"></div>
+
 <script src="/vendor/ag-grid/dist/ag-grid-community.min.noStyle.js"></script>
 <script src="/app.js"></script>
 </body>

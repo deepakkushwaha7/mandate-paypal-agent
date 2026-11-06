@@ -104,7 +104,9 @@ How to work:
 4. Read the verdict. If an order is blocked, fix it if a compliant version still meets the need (e.g. wrong pack size). If the block is a mandate boundary (supplier or category not allowed, caps), do not try to get around it: drop it and tell the buyer.
 5. Call finish with a plain, short summary.
 
-You cannot change prices or the mandate. Spend the buyer's money as carefully as they would.`;
+You cannot change prices or the mandate. Spend the buyer's money as carefully as they would.
+
+The buyer is not technical. In every reason, note and summary, use item names (not SKU codes), short sentences and plain words. Each line's reason should say how many days of stock are left and why you chose the quantity.`;
 
 function planHeuristic(state, instruction) {
   const boost = /campaign|black friday|promo|peak|double|launch/i.test(instruction || '') ? 21 : 0;
@@ -119,7 +121,7 @@ function planHeuristic(state, instruction) {
     needs.push({
       ...s,
       qty,
-      reason: `${s.coverDays} days cover, lead time ${s.leadTimeDays} days${boost ? ', +21 days for the campaign' : ''}.`,
+      reason: `${Math.floor(s.coverDays)} days of stock left; delivery takes ${s.leadTimeDays} days${boost ? '; extra 3 weeks for the campaign' : ''}.`,
     });
   }
   const bySupplier = new Map();
@@ -131,18 +133,18 @@ function planHeuristic(state, instruction) {
 }
 
 async function runHeuristic({ state, instruction, emit, submit }) {
-  emit({ kind: 'tool', name: 'get_stock', text: 'Reading stock levels and usage.' });
-  emit({ kind: 'tool', name: 'get_mandate', text: 'Reading the spending mandate.' });
+  emit({ kind: 'tool', name: 'get_stock', text: 'Checking stock levels and daily usage.' });
+  emit({ kind: 'tool', name: 'get_mandate', text: 'Reading your spending rules.' });
   const { needs, bySupplier, boost } = planHeuristic(state, instruction);
-  if (boost) emit({ kind: 'thought', text: 'The buyer mentioned a campaign, so I am planning 21 extra days of cover.' });
+  if (boost) emit({ kind: 'thought', text: 'You mentioned a campaign, so I am ordering 3 extra weeks of stock.' });
   if (needs.length === 0) {
-    const summary = 'Every SKU has enough cover. No orders needed today.';
+    const summary = 'Everything has enough stock. No orders needed today.';
     emit({ kind: 'finish', text: summary });
     return { summary };
   }
   emit({
     kind: 'thought',
-    text: `${needs.length} SKUs are below lead time + ${SAFETY_DAYS} days: ${needs.map((n) => `${n.sku} (${n.coverDays} d)`).join(', ')}. Grouping into ${bySupplier.size} supplier orders.`,
+    text: `${needs.length} items will run out before a new delivery could arrive: ${needs.map((n) => `${n.name.split(',')[0]} (${Math.floor(n.coverDays)} days left)`).join(', ')}. I'll place one order per supplier.`,
   });
   const notes = [];
   for (const [supplierId, lines] of bySupplier) {
@@ -152,13 +154,13 @@ async function runHeuristic({ state, instruction, emit, submit }) {
       note: `Restock from ${sup.name}.`,
     });
     if (verdict.decision === 'blocked') {
-      const hard = verdict.reasons.filter((r) => r.severity === 'block').map((r) => r.message);
-      emit({ kind: 'thought', text: `Blocked by the mandate, so I will not place it: ${hard.join(' ')}` });
-      notes.push(`Could not order from ${sup.name}: ${hard[0]}`);
+      const hardDetail = verdict.checks.filter((c) => c.status === 'block').map((c) => c.detail);
+      emit({ kind: 'thought', text: `I won't try to get around your rules: ${hardDetail.join(' ')} I'll leave this one to you.` });
+      notes.push(`Not ordered from ${sup.name}: ${hardDetail[0]}`);
     } else if (verdict.decision === 'needs_approval') {
-      notes.push(`${sup.name} order (${eur(verdict.total)}) needs your approval.`);
+      notes.push(`${sup.name} (${eur(verdict.total)}) is waiting for your OK.`);
     } else {
-      notes.push(`${sup.name} order (${eur(verdict.total)}) paid automatically.`);
+      notes.push(`${sup.name} (${eur(verdict.total)}) is paid and on hold, so you can still undo it.`);
     }
   }
   const summary = notes.join(' ');
@@ -180,10 +182,10 @@ async function runModel({ state, instruction, emit, submit, chat }) {
     for (const call of res.toolCalls) {
       let out;
       if (call.name === 'get_stock') {
-        emit({ kind: 'tool', name: 'get_stock', text: 'Reading stock levels and usage.' });
+        emit({ kind: 'tool', name: 'get_stock', text: 'Checking stock levels and daily usage.' });
         out = stockView(state);
       } else if (call.name === 'get_mandate') {
-        emit({ kind: 'tool', name: 'get_mandate', text: 'Reading the spending mandate.' });
+        emit({ kind: 'tool', name: 'get_mandate', text: 'Reading your spending rules.' });
         out = mandateView(state);
       } else if (call.name === 'submit_order') {
         const v = submit(call.input || {});
@@ -223,7 +225,7 @@ async function runAgent({ state, instruction, emit, onProposal, chat = llm.chat,
       kind: 'proposal',
       decision: v.decision,
       total: v.total,
-      text: `Proposed ${v.lines.map((l) => `${l.qty.toLocaleString('en')} × ${l.sku}`).join(', ') || 'nothing valid'} for ${eur(v.total)}.`,
+      text: `${v.lines.map((l) => `${l.qty.toLocaleString('en')} × ${l.name.split(',')[0]}`).join(', ') || 'Nothing valid'} from ${(state.suppliers.find((x) => x.id === v.supplierId) || {}).name || 'a supplier'} for ${eur(v.total)}.`,
       reasons: v.reasons,
       checks: v.checks,
     });
@@ -238,7 +240,8 @@ async function runAgent({ state, instruction, emit, onProposal, chat = llm.chat,
     // If the model is unavailable before it proposed anything (quota, outage),
     // fall back to the deterministic planner so the buyer is never stuck.
     if (submitted > 0) throw e;
-    emit({ kind: 'thought', text: `${model.label} is unavailable (${e.message}). Using the built-in planner instead.` });
+    emit({ kind: 'thought', text: `${model.label} is unavailable right now, so the built-in planner is taking over.` });
+    console.error(`[agent] ${model.label} failed: ${e.message}`);
     return runHeuristic({ state, instruction, emit, submit });
   }
 }

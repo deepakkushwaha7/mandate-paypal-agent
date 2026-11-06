@@ -9,7 +9,8 @@
     "dev": "node --watch src/server.js",
     "test": "node --test test/*.test.js",
     "lint": "eslint .",
-    "check": "npm run lint && npm test"
+    "check": "npm run lint && npm test",
+    "e2e": "node --test test/e2e/*.e2e.js"
   },
   "engines": {
     "node": ">=20"
@@ -25,6 +26,10 @@
   "devDependencies": {
     "@eslint/js": "9.17.0",
     "eslint": "9.17.0",
-    "globals": "15.14.0"
+    "globals": "15.14.0",
+    "playwright": "1.63.0"
+  },
+  "bin": {
+    "mandate-mcp": "src/mcp.js"
   }
 }

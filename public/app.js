@@ -1,440 +1,644 @@
+/* Mandate dashboard. Vanilla JS, no build step.
+   Sections: helpers · notices · render · payments grid · drawer · modals ·
+   rules editor · agent run · toasts · guided tour · live updates */
 (() => {
+  'use strict';
+
+  // ---------- helpers ----------
   const $ = (id) => document.getElementById(id);
-  const eur = (n) => '€' + Number(n || 0).toLocaleString('en-IE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const STATUS_LABEL = {
-    PAYING: 'Paying', AUTHORIZED: 'Held · undo', CAPTURING: 'Capturing', CAPTURED: 'Paid', NEEDS_APPROVAL: 'Needs you',
-    BLOCKED: 'Blocked', FAILED: 'Failed', VOIDED: 'Undone', REFUNDED: 'Refunded', REJECTED: 'Rejected',
+  const eur = (n) => '€' + Number(n || 0).toLocaleString('en-IE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const eur0 = (n) => '€' + Number(n || 0).toLocaleString('en-IE', { maximumFractionDigits: 0 });
+  const local = {
+    get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
+    set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* private mode: fine */ } },
   };
-
-  let state = null;
-  let skew = 0;
-  let selectedId = null;
-  let editing = false;
-
-  // ---------- notices ----------
-  function notice(text, isError) {
-    const n = $('notice');
-    n.textContent = text;
-    n.className = 'notice' + (isError ? ' err' : '');
-    n.hidden = false;
-    clearTimeout(notice.t);
-    notice.t = setTimeout(() => (n.hidden = true), 7000);
-  }
-  const params = new URLSearchParams(location.search);
-  const NOTICES = {
-    'paypal-connected': 'PayPal saved. The agent can now pay within your mandate without asking.',
-    'paypal-cancelled': 'PayPal was not saved. Agent orders will wait for your approval.',
-    approved: `Approved in PayPal. ${params.get('order') || 'The order'} is authorized, and you can undo it until the window closes.`,
-    'approval-cancelled': 'Approval cancelled. The order is still waiting for you.',
-  };
-  if (params.get('notice') && NOTICES[params.get('notice')]) {
-    notice(NOTICES[params.get('notice')]);
-    history.replaceState(null, '', '/');
-  }
 
   async function api(method, url, body) {
-    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, credentials: 'same-origin' });
     const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(json.error || res.statusText);
+    if (!res.ok) throw new Error(json.error || `Something went wrong (${res.status}). Please try again.`);
     return json;
   }
   const act = (fn) => async (...a) => {
-    try { await fn(...a); } catch (e) { notice(e.message, true); }
+    try { await fn(...a); } catch (e) { toast(e.message, { error: true }); }
   };
+  // Disable a button while its action runs, so nothing is sent twice.
+  const busy = (btn, fn) => act(async (...a) => {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    try { await fn(...a); } finally { btn.disabled = false; }
+  });
 
-  // ---------- grid ----------
+  // Plain-language status for every order state.
+  const STATUS = {
+    PAYING: { label: 'Paying…', cls: 'b-held' },
+    AUTHORIZED: { label: 'On hold', cls: 'b-held' },
+    CAPTURING: { label: 'Paying…', cls: 'b-held' },
+    CAPTURED: { label: 'Paid', cls: 'b-paid' },
+    NEEDS_APPROVAL: { label: 'Waiting for you', cls: 'b-wait' },
+    BLOCKED: { label: 'Blocked', cls: 'b-blocked' },
+    FAILED: { label: 'Failed', cls: 'b-failed' },
+    VOIDED: { label: 'Undone', cls: 'b-done' },
+    REFUNDED: { label: 'Refunded', cls: 'b-done' },
+    REJECTED: { label: 'Declined', cls: 'b-done' },
+  };
+  const DECISION = {
+    auto: { title: 'Paid automatically', text: 'It passed every rule, so the agent paid without asking you.' },
+    needs_approval: { title: 'Needs your OK', text: 'It went past one of your rules, so it waits for you.' },
+    blocked: { title: 'Blocked by your rules', text: 'It broke a hard limit. Nothing was charged.' },
+  };
+  const DEAD = ['BLOCKED', 'FAILED', 'VOIDED', 'REFUNDED', 'REJECTED'];
+
+  let state = null;
+  let skew = 0;
   const secondsLeft = (o) => (o.undoUntil ? Math.max(0, Math.ceil((new Date(o.undoUntil) - (Date.now() + skew)) / 1000)) : 0);
+  const statusBadge = (o) => {
+    const s = STATUS[o.status] || { label: o.status, cls: 'b-done' };
+    const extra = o.status === 'AUTHORIZED' ? ` · undo <span data-left="${esc(o.id)}">${secondsLeft(o)}s</span>` : '';
+    return `<span class="badge ${s.cls}">${s.label}${extra}</span>`;
+  };
+  const shortName = (name) => String(name).split(',')[0];
+  const linesText = (o) => o.lines.map((l) => `${l.qty.toLocaleString('en')} × ${shortName(l.name)}`).join(', ');
 
-  function actionsRenderer(p) {
+  // ---------- notices from PayPal redirects ----------
+  const params = new URLSearchParams(location.search);
+  const NOTICES = {
+    'paypal-connected': 'PayPal is saved. Agents can now pay small, in-policy orders without asking you.',
+    'paypal-cancelled': 'PayPal was not saved. Agent payments will wait for your approval.',
+    approved: 'Approved in PayPal. The payment is on hold and you can still undo it.',
+    'approval-cancelled': 'Approval cancelled. The order is still waiting for you.',
+  };
+  if (NOTICES[params.get('notice')]) {
+    setTimeout(() => toast(NOTICES[params.get('notice')]), 300);
+    history.replaceState(null, '', '/');
+  }
+
+  // ---------- render ----------
+  function render() {
+    if (!state) return;
+    const s = state;
+    const m = s.mandate;
+    const ai = s.mode.ai;
+
+    $('org').textContent = `${s.company.name} · demo`;
+    $('env').innerHTML =
+      `<span class="pill ${s.mode.paypal === 'simulated' ? 'off' : ''}">PayPal ${s.mode.paypal === 'simulated' ? 'simulator' : 'sandbox'}</span>` +
+      `<span class="pill ${ai ? '' : 'off'}">${ai ? `AI · ${esc(ai.label)}` : 'AI · built-in planner'}</span>`;
+    $('ai-tag').textContent = ai ? `${ai.label} · ${ai.model}` : 'Built-in planner';
+    $('kill').hidden = !m.active;
+    $('paused').hidden = m.active;
+
+    $('welcome-eyebrow').textContent = `Live demo · ${s.mode.paypal === 'simulated' ? 'PayPal simulator' : 'PayPal sandbox'} · Fake money`;
+    renderWelcome(s);
+    renderBudget(s);
+    renderPayPal(s);
+    renderRules(s);
+    renderAgents(s);
+    renderStock(s);
+    renderInbox(s);
+    renderGrid(s);
+    renderLog(s);
+    renderDrawer();
+    toastNewHolds(s.orders);
+
+    $('run').disabled = s.running || !m.active;
+    $('run').textContent = s.running ? 'Agent is working…' : 'Run agent';
+  }
+
+  function renderWelcome(s) {
+    const steps = [
+      { done: Boolean(s.mandate.vaultId), title: 'Save PayPal for your agents', sub: 'Once. Then small orders pay without you.', go: 'card-paypal' },
+      { done: (s.mandate.version || 1) > 1, title: 'Set your rules in plain English', sub: 'Budget, limits and approved suppliers.', go: 'card-rules' },
+      { done: s.orders.length > 0, title: 'Run the purchasing agent', sub: 'Watch every decision. Undo any payment.', go: 'card-agent' },
+    ];
+    const show = local.get('mandate.welcome') !== 'closed' && !steps.every((x) => x.done);
+    $('welcome').hidden = !show;
+    if (!show) return;
+    const now = steps.findIndex((x) => !x.done);
+    $('steps').innerHTML = steps.map((x, i) => `<li class="${x.done ? 'done' : ''} ${i === now ? 'now' : ''}"><button type="button" data-go="${x.go}"><b>${esc(x.title)}</b><span>${esc(x.sub)}</span></button></li>`).join('');
+  }
+
+  function renderBudget(s) {
+    const m = s.mandate;
+    const cap = m.monthlyCap || 1;
+    const paid = (m.openingSpend || 0) + s.totals.paid;
+    $('month').textContent = new Date().toLocaleDateString('en-GB', { month: 'long' });
+    $('spent').textContent = eur0(m.spent);
+    $('cap').textContent = eur0(m.monthlyCap);
+    const pct = (v) => `${Math.min(100, (v / cap) * 100)}%`;
+    const meter = $('meter');
+    meter.querySelector('.m-paid').style.width = pct(paid);
+    meter.querySelector('.m-hold').style.width = pct(s.totals.held);
+    meter.querySelector('.m-wait').style.width = pct(s.totals.waiting);
+    meter.setAttribute('aria-label', `${eur0(m.spent)} of ${eur0(m.monthlyCap)} used this month`);
+    $('t-paid').textContent = eur(paid);
+    $('t-hold').textContent = eur(s.totals.held);
+    $('t-wait').textContent = eur(s.totals.waiting);
+    $('t-left').textContent = eur(Math.max(0, m.monthlyCap - m.spent));
+  }
+
+  function renderPayPal(s) {
+    const m = s.mandate;
+    const el = $('paypal-state');
+    if (m.vaultId && !m.vaultBlocked) {
+      el.innerHTML = `<div class="pp"><div class="pp-row"><div class="pp-logo" aria-hidden="true">P</div><div><b>PayPal saved for agents</b><span>${esc(m.vaultLabel)}</span></div></div>
+        <p class="muted">Agents pay orders under ${eur0(m.autoApproveBelow)} on their own. Everything else waits for you.</p>
+        <div class="row"><button class="btn btn-ghost btn-sm" id="disconnect" type="button">Remove</button></div></div>`;
+      const d = $('disconnect');
+      d.onclick = busy(d, () => api('POST', '/api/mandate/disconnect'));
+    } else {
+      el.innerHTML = `<div class="pp"><p class="muted">${m.vaultBlocked
+        ? 'PayPal declined payments without you present, so every agent payment now waits for your approval.'
+        : 'Save PayPal once so agents can pay small, in-policy orders without asking you. You approve this in PayPal.'}</p>
+        <button class="btn btn-primary" id="connect" type="button">Save PayPal for agents</button></div>`;
+      const c = $('connect');
+      c.onclick = busy(c, async () => { const r = await api('POST', '/api/mandate/connect'); location.href = r.approveUrl; });
+    }
+  }
+
+  const supName = (id) => ((state.suppliers.find((x) => x.id === id) || {}).name || id).replace(/ (BV|GmbH|Ltd|Wholesale)$/, '');
+  const cap1 = (c) => c[0].toUpperCase() + c.slice(1);
+  function renderRules(s) {
+    const m = s.mandate;
+    $('rules-text').textContent = m.plainText || 'No description yet.';
+    const rows = [
+      ['Monthly budget', eur0(m.monthlyCap)],
+      ['Largest single order', eur0(m.perOrderCap)],
+      ['Pays without asking below', eur0(m.autoApproveBelow)],
+      ['Asks you if a price rises over', `${m.maxPriceIncreasePct}%`],
+      ['Time to undo a payment', `${m.undoWindowSec} seconds`],
+      ['Approved suppliers', m.allowedSupplierIds.map(supName).join(', ') || 'None'],
+      ['Approved categories', m.allowedCategories.map(cap1).join(', ') || 'None'],
+    ];
+    $('rules').innerHTML = rows.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('');
+    $('rules-version').textContent = `Version ${m.version || 1}. Every payment records the version that allowed it.`;
+  }
+
+  function renderAgents(s) {
+    $('agents').innerHTML = (s.agents || []).map((a) => `<li>
+      <div><b>${esc(a.name)}</b><div class="meta">${a.id === 'reorder-agent' ? 'Built in · runs on schedule' : 'External · connects with MCP'}</div></div>
+      <input type="checkbox" class="switch" data-agent="${esc(a.id)}" ${a.active ? 'checked' : ''} aria-label="${esc(a.name)} may spend">
+      <div class="bar"><i style="width:${Math.min(100, (a.spent / (a.monthlyCap || 1)) * 100)}%"></i></div>
+      <span class="spent">${eur0(a.spent)} of ${eur0(a.monthlyCap)} this month${a.active ? '' : ' · paused'}</span></li>`).join('');
+    document.querySelectorAll('[data-agent]').forEach((el) => {
+      el.onchange = act(() => api('PATCH', `/api/agents/${el.dataset.agent}`, { active: el.checked }));
+    });
+  }
+
+  function renderStock(s) {
+    $('stock').innerHTML = s.stock.map((x) => {
+      const reorderAt = x.leadTimeDays + 7;
+      const low = x.coverDays < reorderAt;
+      return `<li><span class="name" title="${esc(x.name)}">${esc(shortName(x.name))}</span><span class="days ${low ? 'low' : ''}">${Math.floor(x.coverDays)}</span>
+        <div class="bar" title="Reorder when below ${reorderAt} days"><i class="${low ? 'low' : 'ok'}" style="width:${Math.min(100, (x.coverDays / 60) * 100)}%"></i></div></li>`;
+    }).join('');
+  }
+
+  function issuesOf(o) {
+    const issues = (o.checks || []).filter((c) => (o.decision === 'blocked' ? c.status === 'block' : c.status === 'review')).map((c) => c.detail);
+    if (o.reasons.some((r) => r.code === 'VAULT_REFUSED')) issues.push('PayPal needs your approval.');
+    return issues;
+  }
+
+  function renderInbox(s) {
+    const waiting = s.orders.filter((o) => o.status === 'NEEDS_APPROVAL');
+    $('card-inbox').hidden = waiting.length === 0;
+    $('inbox-count').textContent = waiting.length ? `${waiting.length} · ${eur(waiting.reduce((a, o) => a + o.total, 0))}` : '';
+    $('inbox').innerHTML = waiting.map((o) => `<li>
+      <span class="what">${esc(o.supplierName)}</span>
+      <div class="acts"><span class="amt">${eur(o.total)}</span>
+        <button class="btn btn-primary btn-sm" data-approve="${esc(o.id)}" type="button">Approve in PayPal</button>
+        <button class="btn btn-ghost btn-sm" data-reject="${esc(o.id)}" type="button">Decline</button></div>
+      <span class="why">${esc(issuesOf(o)[0] || 'Needs your approval.')}</span>
+      <span class="meta">${esc(o.createdBy)} · ${esc(linesText(o))} · <button class="btn-link" data-open="${esc(o.id)}" type="button">See why</button></span>
+    </li>`).join('');
+    wireOrderButtons($('inbox'));
+  }
+
+  function wireOrderButtons(root) {
+    root.querySelectorAll('[data-approve]').forEach((b) => { b.onclick = busy(b, async () => { const r = await api('POST', `/api/orders/${b.dataset.approve}/approve`); location.href = r.approveUrl; }); });
+    root.querySelectorAll('[data-reject]').forEach((b) => { b.onclick = busy(b, async () => { await api('POST', `/api/orders/${b.dataset.reject}/reject`); toast('Declined. Nothing was charged.'); }); });
+    root.querySelectorAll('[data-undo]').forEach((b) => { b.onclick = busy(b, async () => { const o = await api('POST', `/api/orders/${b.dataset.undo}/undo`); toast(o.status === 'REFUNDED' ? 'Refunded through PayPal.' : 'Undone. No money moved.'); }); });
+    root.querySelectorAll('[data-open]').forEach((b) => { b.onclick = () => openDrawer(b.dataset.open); });
+  }
+
+  function renderLog(s) {
+    $('log').innerHTML = s.audit.map((a) => `<li><time>${new Date(a.at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</time><span class="who" title="${esc(a.actor)}">${esc(a.actor)}</span><span>${esc(a.message)}</span></li>`).join('');
+  }
+
+  // ---------- payments grid (AG Grid) ----------
+  const FILTERS = [
+    { id: 'all', label: 'All', test: () => true },
+    { id: 'wait', label: 'Waiting for you', test: (o) => o.status === 'NEEDS_APPROVAL' },
+    { id: 'hold', label: 'On hold', test: (o) => ['PAYING', 'AUTHORIZED', 'CAPTURING'].includes(o.status) },
+    { id: 'paid', label: 'Paid', test: (o) => o.status === 'CAPTURED' },
+    { id: 'blocked', label: 'Blocked', test: (o) => o.status === 'BLOCKED' || o.status === 'FAILED' },
+    { id: 'undone', label: 'Undone', test: (o) => ['VOIDED', 'REFUNDED', 'REJECTED'].includes(o.status) },
+  ];
+  let filter = 'all';
+
+  function actionsCell(p) {
+    if (!p.data || p.node.rowPinned) return '';
     const o = p.data;
     const wrap = document.createElement('div');
-    wrap.className = 'cell-actions';
-    const add = (label, cls, fn) => {
-      const b = document.createElement('button');
-      b.className = 'btn ' + cls;
-      b.textContent = label;
-      b.addEventListener('click', (e) => { e.stopPropagation(); act(fn)(); });
-      wrap.appendChild(b);
-    };
-    if (o.status === 'NEEDS_APPROVAL') {
-      add('Approve in PayPal', 'pp-btn', async () => {
-        const r = await api('POST', `/api/orders/${o.id}/approve`);
-        location.href = r.approveUrl;
-      });
-      add('Reject', 'ghost', () => api('POST', `/api/orders/${o.id}/reject`));
-    } else if (o.status === 'AUTHORIZED') {
-      const b = document.createElement('button');
-      b.className = 'btn danger';
-      b.dataset.undo = o.id;
-      b.textContent = `Undo · ${secondsLeft(o)}s`;
-      b.addEventListener('click', (e) => { e.stopPropagation(); act(() => api('POST', `/api/orders/${o.id}/undo`))(); });
-      wrap.appendChild(b);
-    } else if (o.status === 'CAPTURED') {
-      add('Undo · refund', 'ghost', () => api('POST', `/api/orders/${o.id}/undo`));
-    }
+    wrap.className = 'cell-acts';
+    if (o.status === 'NEEDS_APPROVAL') wrap.innerHTML = `<button class="btn btn-primary" data-approve="${esc(o.id)}" type="button">Approve</button>`;
+    else if (o.status === 'AUTHORIZED') wrap.innerHTML = `<button class="btn btn-danger" data-undo="${esc(o.id)}" type="button">Undo</button>`;
+    else if (o.status === 'CAPTURED') wrap.innerHTML = `<button class="btn btn-ghost" data-undo="${esc(o.id)}" type="button">Refund</button>`;
+    wrap.addEventListener('click', (e) => e.stopPropagation());
+    wireOrderButtons(wrap);
     return wrap;
   }
 
   const grid = agGrid.createGrid($('grid'), {
     rowData: [],
     getRowId: (p) => p.data.id,
-    rowHeight: 44,
-    rowSelection: 'single',
+    domLayout: 'autoHeight',
+    rowHeight: 48,
+    headerHeight: 40,
     animateRows: true,
-    overlayNoRowsTemplate: '<span style="color:var(--muted)">No orders yet. Run the agent to start.</span>',
+    overlayNoRowsTemplate: '<span class="muted">No payments yet. Run the agent to see how your rules decide.</span>',
     defaultColDef: { sortable: true, resizable: true, suppressMovable: true },
+    isExternalFilterPresent: () => filter !== 'all',
+    doesExternalFilterPass: (n) => FILTERS.find((f) => f.id === filter).test(n.data),
     columnDefs: [
-      { field: 'id', headerName: 'PO', width: 100, cellClass: 'mono' },
-      { field: 'createdAt', headerName: 'Created', width: 95, sort: 'desc', valueFormatter: (p) => new Date(p.value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) },
-      { field: 'supplierName', headerName: 'Supplier', flex: 1, minWidth: 150 },
-      { headerName: 'Lines', flex: 1.4, minWidth: 180, valueGetter: (p) => p.data.lines.map((l) => `${l.qty.toLocaleString('en')} × ${l.sku}`).join(', ') },
-      { field: 'total', headerName: 'Total', width: 110, type: 'rightAligned', cellClass: 'mono', valueFormatter: (p) => eur(p.value) },
+      { field: 'supplierName', headerName: 'Supplier', flex: 1.2, minWidth: 150 },
+      { headerName: 'What', flex: 1.6, minWidth: 180, valueGetter: (p) => (p.data.lines ? linesText(p.data) : ''), tooltipValueGetter: (p) => p.value },
       { field: 'createdBy', headerName: 'Agent', width: 140 },
-      { field: 'status', headerName: 'Status', width: 130, cellRenderer: (p) => `<span class="status s-${p.value}">${STATUS_LABEL[p.value] || p.value}</span>` },
-      { headerName: '', colId: 'actions', minWidth: 210, flex: 1, sortable: false, cellRenderer: actionsRenderer },
+      { field: 'total', headerName: 'Amount', width: 120, type: 'rightAligned', valueFormatter: (p) => eur(p.value) },
+      { field: 'status', headerName: 'Status', width: 170, cellRenderer: (p) => (p.node.rowPinned ? '' : statusBadge(p.data)) },
+      { headerName: '', colId: 'act', width: 110, sortable: false, resizable: false, cellRenderer: actionsCell },
     ],
-    onRowClicked: (e) => { selectedId = e.data.id; renderDetail(); },
+    onRowClicked: (e) => { if (!e.node.rowPinned) openDrawer(e.data.id); },
+    onCellKeyDown: (e) => { if (e.event.key === 'Enter' && e.data && !e.node.rowPinned) openDrawer(e.data.id); },
   });
 
-  // ---------- render ----------
-  function render() {
-    if (!state) return;
-    const s = state;
-    $('company').textContent = `${s.company.name} · ${s.company.buyer}`;
-    $('modes').innerHTML =
-      `<span class="pill ${s.mode.paypal === 'simulated' ? 'sim' : ''}">PayPal: ${s.mode.paypal}</span>` +
-      `<span class="pill ${s.mode.ai ? '' : 'sim'}">AI: ${s.mode.ai ? esc(s.mode.ai.model) : 'rules planner'}</span>`;
-    $('engine').textContent = s.mode.ai ? `${s.mode.ai.label} with tool use` : 'Built-in planner (add an AI key for live reasoning)';
-
-    // budget
-    const m = s.mandate;
-    const cap = m.monthlyCap || 1;
-    const paid = m.openingSpend + s.totals.paid;
-    $('month').textContent = new Date().toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
-    $('spent').textContent = eur(m.spent);
-    $('cap').textContent = eur(m.monthlyCap);
-    const pct = (v) => Math.min(100, (v / cap) * 100) + '%';
-    $('meter').querySelector('.m-spent').style.width = pct(paid);
-    $('meter').querySelector('.m-held').style.width = pct(s.totals.held);
-    $('meter').querySelector('.m-wait').style.width = pct(s.totals.waiting);
-    $('t-paid').textContent = eur(paid);
-    $('t-held').textContent = eur(s.totals.held);
-    $('t-wait').textContent = eur(s.totals.waiting);
-    $('t-left').textContent = eur(m.monthlyCap - m.spent);
-
-    // mandate
-    $('pp').innerHTML = m.vaultId
-      ? `<p><b>PayPal saved</b> · ${esc(m.vaultLabel)}<br><span class="muted">The agent pays orders below ${eur(m.autoApproveBelow)} on its own. Larger or unusual orders wait for you.</span></p><button class="btn ghost small" id="disconnect">Remove</button>`
-      : `<p><b>No payment method yet.</b><br><span class="muted">Save PayPal once so the agent can pay small, in-policy orders without asking you.</span></p><button class="btn pp-btn" id="connect">Save PayPal for the agent</button>`;
-    const c = $('connect');
-    if (c) c.onclick = act(async () => { c.disabled = true; const r = await api('POST', '/api/mandate/connect'); location.href = r.approveUrl; });
-    const d = $('disconnect');
-    if (d) d.onclick = act(() => api('POST', '/api/mandate/disconnect'));
-    const supName = (id) => (s.suppliers.find((x) => x.id === id) || {}).name || id;
-    $('rules').innerHTML = [
-      [m.active ? 'Active' : 'Paused', 'agent spending'],
-      [eur(m.perOrderCap), 'max per order'],
-      [eur(m.autoApproveBelow), 'auto-pay below'],
-      [`${m.maxPriceIncreasePct}%`, 'max supplier price rise'],
-      [`${m.undoWindowSec}s`, 'undo window before capture'],
-      [m.allowedCategories.join(', '), 'allowed categories'],
-      [m.allowedSupplierIds.map(supName).join(', '), 'allowed suppliers'],
-    ].map(([b, t]) => `<li><b>${esc(b)}</b><span>${esc(t)}</span></li>`).join('');
-    if (!editing) fillForm();
-    $('mversion').textContent = `version ${m.version || 1}`;
-    const pt = $('plain-text');
-    if (document.activeElement !== pt && !pt.dataset.dirty) pt.value = m.plainText || '';
-
-    // kill switch and paused banner
-    const kill = $('kill');
-    kill.textContent = m.active ? 'Stop all agents' : 'Resume agents';
-    kill.classList.toggle('off', !m.active);
-    let banner = $('paused');
-    if (!m.active && !banner) {
-      banner = document.createElement('div');
-      banner.id = 'paused';
-      banner.className = 'paused-banner';
-      banner.textContent = 'All agents are stopped. No agent can spend until you resume.';
-      document.querySelector('.layout').before(banner);
-    } else if (m.active && banner) banner.remove();
-
-    // agents
-    $('agent-list').innerHTML = (s.agents || []).map((a) => `<li>
-      <div><b>${esc(a.name)}</b><div class="meta">${esc(a.kind)}</div></div>
-      <input type="checkbox" class="switch" data-agent="${esc(a.id)}" ${a.active ? 'checked' : ''} aria-label="${esc(a.name)} may spend">
-      <span class="bar"><i style="width:${Math.min(100, (a.spent / (a.monthlyCap || 1)) * 100)}%"></i></span>
-      <span class="spent">${eur(a.spent)} of ${eur(a.monthlyCap)} this month</span></li>`).join('');
-    document.querySelectorAll('[data-agent]').forEach((el) => (el.onchange = act(() => api('PATCH', `/api/agents/${el.dataset.agent}`, { active: el.checked }))));
-    $('mcp-config').textContent = JSON.stringify({ mcpServers: { mandate: { command: 'node', args: ['/path/to/mandate/src/mcp.js'], env: { MANDATE_URL: location.origin, MANDATE_AGENT_ID: 'claude-desktop' } } } }, null, 2);
-    toastNew(s.orders);
-    renderSteps(s);
-    renderInbox(s);
-
-    // run button
-    $('run').disabled = s.running;
-    $('run').textContent = s.running ? 'Agent is working…' : 'Run reorder check';
-
-    // stock
-    $('cover').innerHTML = s.stock.map((x) => {
-      const reorderAt = x.leadTimeDays + 7;
-      const scale = 60;
-      const low = x.coverDays < reorderAt;
-      return `<li><span class="name" title="${esc(x.name)}"><b class="mono">${esc(x.sku)}</b> · ${esc(x.supplierName)}</span><span class="days">${x.coverDays.toFixed(1)} d</span>
-        <span class="bar"><i class="${low ? 'low' : ''}" style="width:${Math.min(100, (x.coverDays / scale) * 100)}%"></i><b style="left:${Math.min(100, (reorderAt / scale) * 100)}%" title="Reorder point ${reorderAt} days"></b></span></li>`;
-    }).join('');
-
-    // orders
-    grid.setGridOption('rowData', s.orders);
-    grid.refreshCells({ columns: ['actions', 'status'], force: true });
-    $('order-count').textContent = `${s.orders.length} orders`;
-    renderDetail();
-
-    // audit
-    $('audit').innerHTML = s.audit.map((a) =>
-      `<li><time>${new Date(a.at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time><span class="who">${esc(a.actor)}</span><span>${esc(a.message)}</span></li>`).join('');
+  function pinTotals() {
+    const rows = [];
+    grid.forEachNodeAfterFilter((n) => rows.push(n.data));
+    const live = rows.filter((o) => !DEAD.includes(o.status));
+    grid.setGridOption('pinnedBottomRowData', rows.length
+      ? [{ id: '__total', supplierName: `${rows.length} payment${rows.length > 1 ? 's' : ''}`, lines: null, createdBy: 'Active total', total: live.reduce((a, o) => a + o.total, 0), status: '' }]
+      : []);
   }
 
-  function renderDetail() {
-    const el = $('detail');
-    const o = state && state.orders.find((x) => x.id === selectedId);
-    if (!o) { el.hidden = true; return; }
-    el.hidden = false;
-    const ICON = { pass: '✓', review: '!', block: '✕', skip: '–' };
-    const extra = o.reasons.filter((r) => r.code === 'VAULT_REFUSED').map((r) => `<li class="review"><span class="ic">!</span><div><b>PayPal</b> <span class="d">${esc(r.message)}</span></div></li>`).join('');
-    const reasons = o.checks
-      ? `<ul class="checks">${o.checks.map((c) => `<li class="${c.status}"><span class="ic">${ICON[c.status]}</span><div><b>${esc(c.label)}</b> <span class="d">${esc(c.detail)}</span></div></li>`).join('')}${extra}</ul>`
-      : `<ul class="reasons">${o.reasons.map((r) => `<li class="${r.severity}">${esc(r.message)}</li>`).join('') || '<li class="ok">Within every limit of the mandate.</li>'}</ul>`;
+  function renderGrid(s) {
+    grid.setGridOption('rowData', s.orders);
+    grid.refreshCells({ columns: ['status', 'act'], force: true });
+    $('filters').innerHTML = FILTERS.map((f) => `<button type="button" role="tab" aria-selected="${f.id === filter}" data-f="${f.id}">${f.label}<span class="n">${s.orders.filter(f.test).length}</span></button>`).join('');
+    $('filters').querySelectorAll('[data-f]').forEach((b) => { b.onclick = () => { filter = b.dataset.f; grid.onFilterChanged(); renderGrid(state); }; });
+    pinTotals();
+  }
+  $('search').addEventListener('input', (e) => { grid.setGridOption('quickFilterText', e.target.value); pinTotals(); });
+
+  // ---------- payment drawer ----------
+  let openId = null;
+  let lastFocus = null;
+  function openDrawer(id) {
+    openId = id;
+    lastFocus = document.activeElement;
+    $('drawer').hidden = false;
+    $('scrim').hidden = false;
+    renderDrawer();
+    $('d-close').focus();
+  }
+  function closeDrawer() {
+    if (!openId) return;
+    openId = null;
+    $('drawer').hidden = true;
+    $('scrim').hidden = true;
+    if (lastFocus && lastFocus.isConnected) lastFocus.focus();
+  }
+  $('d-close').onclick = closeDrawer;
+  $('scrim').onclick = closeDrawer;
+
+  function renderDrawer() {
+    if (!openId || !state) return;
+    const o = state.orders.find((x) => x.id === openId);
+    if (!o) { closeDrawer(); return; }
     const rc = o.receipt || {};
-    el.innerHTML = `
+    const d = DECISION[o.decision] || DECISION.auto;
+    const checks = (o.checks || []).filter((c) => c.status !== 'skip');
+    const issues = checks.filter((c) => (o.decision === 'blocked' ? c.status === 'block' : c.status === 'review'));
+    const other = checks.filter((c) => c.status !== 'pass' && !issues.includes(c));
+    const passed = checks.filter((c) => c.status === 'pass');
+    const icon = { pass: '✓', review: '!', block: '✕' };
+    const li = (c) => `<li class="${c.status}"><span class="i" aria-hidden="true">${icon[c.status]}</span><div>${esc(c.label)}<span class="d">${esc(c.detail)}</span></div></li>`;
+    const vault = o.reasons.find((r) => r.code === 'VAULT_REFUSED');
+    let actions = '';
+    if (o.status === 'NEEDS_APPROVAL') actions = `<button class="btn btn-primary" data-approve="${esc(o.id)}" type="button">Approve in PayPal</button><button class="btn btn-ghost" data-reject="${esc(o.id)}" type="button">Decline</button>`;
+    else if (o.status === 'AUTHORIZED') actions = `<button class="btn btn-danger" data-undo="${esc(o.id)}" type="button">Undo payment</button><span class="muted">PayPal holds the money for <span data-left="${esc(o.id)}">${secondsLeft(o)}s</span>. Nothing has gone to the supplier yet.</span>`;
+    else if (o.status === 'CAPTURED') actions = `<button class="btn btn-ghost" data-undo="${esc(o.id)}" type="button">Refund payment</button>`;
+    const refs = [['PayPal order', o.paypal.orderId], ['Authorization', o.paypal.authorizationId], ['Capture', o.paypal.captureId], ['Refund', o.paypal.refundId]].filter(([, v]) => v);
+
+    $('d-eyebrow').textContent = `${o.id} · ${new Date(o.createdAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`;
+    $('d-title').textContent = o.supplierName;
+    $('d-body').innerHTML = `
+      <div class="summary"><span class="amt">${eur(o.total)}</span>${statusBadge(o)}</div>
+      ${actions ? `<div class="row">${actions}</div>` : ''}
+      <div class="verdict ${esc(o.decision)}"><b>${d.title}</b>${d.text}</div>
       <div>
-        <h3>${esc(o.id)} · ${esc(o.supplierName)} <span class="status s-${o.status}">${STATUS_LABEL[o.status] || o.status}</span></h3>
-        <p class="muted">${esc(o.note)}</p>
-        <div style="overflow-x:auto"><table><thead><tr><th>SKU</th><th>Why</th><th class="num">Qty</th><th class="num">Unit</th><th class="num">Line</th></tr></thead><tbody>
-        ${o.lines.map((l) => `<tr><td class="mono">${esc(l.sku)}</td><td>${esc(l.reason)}</td><td class="num">${l.qty.toLocaleString('en')}</td><td class="num">€${l.unitPrice}</td><td class="num">${eur(l.lineTotal)}</td></tr>`).join('')}
-        <tr><td colspan="4"><b>Total</b></td><td class="num"><b>${eur(o.total)}</b></td></tr></tbody></table></div>
+        <p class="section-title">Why your rules decided this</p>
+        ${issues.length || vault ? `<ul class="checks">${issues.map(li).join('')}${vault ? `<li class="review"><span class="i">!</span><div>PayPal<span class="d">${esc(vault.message)}</span></div></li>` : ''}</ul>` : ''}
+        ${other.length ? `<details class="passed-toggle"><summary class="btn-link">${other.length} other rule${other.length > 1 ? 's' : ''} also flagged</summary><ul class="checks">${other.map(li).join('')}</ul></details>` : ''}
+        ${passed.length ? `<details class="passed-toggle" ${issues.length ? '' : 'open'}><summary class="btn-link">${passed.length} rule${passed.length > 1 ? 's' : ''} passed</summary><ul class="checks">${passed.map(li).join('')}</ul></details>` : ''}
+      </div>
+      ${rc.rationale ? `<div><p class="section-title">What the agent said</p><p class="rationale">${esc(rc.rationale)}</p></div>` : ''}
+      <div>
+        <p class="section-title">Items</p>
+        <table class="lines"><thead><tr><th>Item</th><th class="r">Qty</th><th class="r">Amount</th></tr></thead><tbody>
+        ${o.lines.map((l) => `<tr><td>${esc(l.name)}<span class="reason">${esc(l.reason)}</span></td><td class="r">${l.qty.toLocaleString('en')}</td><td class="r">${eur(l.lineTotal)}</td></tr>`).join('')}
+        </tbody><tfoot><tr><td>Total</td><td></td><td class="r">${eur(o.total)}</td></tr></tfoot></table>
       </div>
       <div>
-        <h3>Decision receipt: ${esc({ auto: 'paid automatically', needs_approval: 'needs a human', blocked: 'blocked' }[o.decision] || o.decision)}</h3>
-        <div class="receipt-meta"><span>${esc(rc.agentName || o.createdBy)}</span><span>mandate v${esc(rc.mandateVersion || 1)}</span><span>${rc.evaluatedAt ? new Date(rc.evaluatedAt).toLocaleString('en-GB') : ''}</span></div>
-        ${rc.rationale ? `<div class="rationale"><span class="eyebrow">Agent's reason</span><br>${esc(rc.rationale)}</div>` : ''}
-        ${reasons}
-        <div class="ids">
-          ${o.paypal.orderId ? `<span>PayPal order ${esc(o.paypal.orderId)}</span>` : ''}
-          ${o.paypal.authorizationId ? `<span>Authorization ${esc(o.paypal.authorizationId)}</span>` : ''}
-          ${o.paypal.captureId ? `<span>Capture ${esc(o.paypal.captureId)}</span>` : ''}
-          ${o.paypal.refundId ? `<span>Refund ${esc(o.paypal.refundId)}</span>` : ''}
-          ${o.error ? `<span style="color:var(--bad)">${esc(o.error)}</span>` : ''}
-        </div>
+        <p class="section-title">Record</p>
+        <dl class="refs"><dt>Requested by</dt><dd>${esc(rc.agentName || o.createdBy)}</dd><dt>Rules version</dt><dd>v${esc(rc.mandateVersion || 1)}</dd>${refs.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}${o.error ? `<dt>Error</dt><dd>${esc(o.error)}</dd>` : ''}</dl>
       </div>`;
+    wireOrderButtons($('d-body'));
   }
 
-  // ---------- mandate form ----------
+  // ---------- modals ----------
+  function openModal(id, focusId) {
+    lastFocus = document.activeElement;
+    $(id).hidden = false;
+    setTimeout(() => (focusId ? $(focusId) : $(id).querySelector('button, textarea, input')).focus(), 30);
+  }
+  function closeModals() {
+    let was = false;
+    document.querySelectorAll('.modal').forEach((m) => { if (!m.hidden) was = true; m.hidden = true; });
+    if (was && lastFocus && lastFocus.isConnected) lastFocus.focus();
+  }
+  document.querySelectorAll('.modal').forEach((m) => {
+    m.addEventListener('click', (e) => { if (e.target === m || e.target.closest('[data-close]')) closeModals(); });
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (!$('tour').hidden) { endTour(); return; }
+    if ([...document.querySelectorAll('.modal')].some((m) => !m.hidden)) { closeModals(); return; }
+    closeDrawer();
+  });
+  document.querySelectorAll('[data-copy]').forEach((b) => {
+    b.onclick = async () => {
+      const el = $(b.dataset.copy);
+      try { await navigator.clipboard.writeText(el.textContent); toast('Copied.'); } catch {
+        const r = document.createRange(); r.selectNodeContents(el); getSelection().removeAllRanges(); getSelection().addRange(r);
+      }
+    };
+  });
+
+  // kill switch
+  $('kill').onclick = () => {
+    const open = state.orders.filter((o) => o.status === 'AUTHORIZED');
+    const sum = open.reduce((a, o) => a + o.total, 0);
+    $('kill-q').textContent = open.length
+      ? `Every agent stops immediately, and ${open.length} payment${open.length > 1 ? 's' : ''} on hold (${eur(sum)}) will be cancelled in PayPal. Paid orders are not affected.`
+      : 'Every agent stops immediately. Nothing is on hold right now, so no payment is cancelled.';
+    openModal('m-kill', 'kill-confirm');
+  };
+  $('kill-confirm').onclick = busy($('kill-confirm'), async () => {
+    const r = await api('POST', '/api/kill');
+    closeModals();
+    toast(`All agents stopped.${r.voided ? ` ${r.voided} payment${r.voided > 1 ? 's' : ''} cancelled in PayPal. No money moved.` : ''}`);
+  });
+  $('resume').onclick = busy($('resume'), async () => { await api('PUT', '/api/mandate', { active: true }); toast('Agents can spend again.'); });
+
+  $('reset').onclick = busy($('reset'), async () => {
+    await api('POST', '/api/reset');
+    $('feed').innerHTML = '';
+    $('feed-empty').hidden = false;
+    closeDrawer();
+    toast('Demo restarted with fresh data.');
+  });
+
+  // connect an agent
+  $('connect-agent').onclick = () => {
+    const cfg = { mcpServers: { mandate: { command: 'npx', args: ['-y', '-p', 'github:deepakkushwaha7/mandate-paypal-agent', 'mandate-mcp'], env: { MANDATE_URL: location.origin, MANDATE_AGENT_ID: 'claude-desktop', MANDATE_AGENT_KEY: state.agentKey } } } };
+    $('mcp-config').textContent = JSON.stringify(cfg, null, 2);
+    $('toolkit-snippet').textContent = [
+      "const { PayPalAgentToolkit } = require('@paypal/agent-toolkit/openai');",
+      "const { guardToolkit } = require('./examples/paypal-agent-toolkit-guard');",
+      '',
+      'const toolkit = new PayPalAgentToolkit({ clientId, clientSecret, configuration });',
+      'const guarded = guardToolkit(toolkit, {',
+      "  agentId: 'claude-desktop',",
+      `  mandateUrl: '${location.origin}',`,
+      `  agentKey: '${state.agentKey}',`,
+      '});',
+      '',
+      '// Same API as the toolkit. Refunds, invoices and orders are checked first.',
+      'await guarded.handleToolCall(toolCall);',
+    ].join('\n');
+    openModal('m-connect');
+  };
+
+  // ---------- rules editor ----------
   function fillForm() {
     const m = state.mandate;
+    $('plain').value = m.plainText || '';
     $('f-monthly').value = m.monthlyCap;
     $('f-perorder').value = m.perOrderCap;
     $('f-auto').value = m.autoApproveBelow;
     $('f-drift').value = m.maxPriceIncreasePct;
     $('f-undo').value = m.undoWindowSec;
-    $('f-active').checked = m.active;
-    $('f-suppliers').innerHTML = state.suppliers.map((s) =>
-      `<label><input type="checkbox" value="${esc(s.id)}" ${m.allowedSupplierIds.includes(s.id) ? 'checked' : ''}> ${esc(s.name)}</label>`).join('');
+    $('f-suppliers').innerHTML = state.suppliers.map((s) => `<label><input type="checkbox" value="${esc(s.id)}" ${m.allowedSupplierIds.includes(s.id) ? 'checked' : ''}> ${esc(s.name)}</label>`).join('');
     const cats = [...new Set(state.stock.map((x) => x.category))];
-    $('f-cats').innerHTML = cats.map((c) =>
-      `<label><input type="checkbox" value="${esc(c)}" ${m.allowedCategories.includes(c) ? 'checked' : ''}> ${esc(c)}</label>`).join('');
+    $('f-cats').innerHTML = cats.map((c) => `<label><input type="checkbox" value="${esc(c)}" ${m.allowedCategories.includes(c) ? 'checked' : ''}> ${esc(cap1(c))}</label>`).join('');
+    $('diff').innerHTML = '';
+    $('parse-status').textContent = '';
   }
-  $('edit-mandate').onclick = () => { editing = true; fillForm(); $('mandate-form').hidden = false; $('rules').hidden = true; };
-  $('cancel-mandate').onclick = () => { editing = false; $('mandate-form').hidden = true; $('rules').hidden = false; };
-  $('mandate-form').onsubmit = act(async (e) => {
+  $('edit-rules').onclick = () => { fillForm(); openModal('m-rules', 'plain'); };
+  $('parse').onclick = busy($('parse'), async () => {
+    const text = $('plain').value.trim();
+    $('parse-status').textContent = state.mode.ai ? `${state.mode.ai.label} is reading your rules…` : 'Reading your rules…';
+    try {
+      const r = await api('POST', '/api/mandate/parse', { text });
+      const fallback = r.engineError ? '<p class="warn">AI was unavailable, so a simpler reader was used. Please check the changes.</p>' : '';
+      if (!r.changes.length) {
+        $('diff').innerHTML = `<p class="muted">No changes. Your rules already say this.</p>${fallback}`;
+        return;
+      }
+      $('diff').innerHTML = `<table><thead><tr><th>Rule</th><th>Now</th><th>After</th></tr></thead><tbody>
+        ${r.changes.map((c) => `<tr><td>${esc(c.label)}</td><td class="from">${esc(c.from)}</td><td class="to">${esc(c.to)}</td></tr>`).join('')}</tbody></table>
+        ${r.warnings.map((w) => `<p class="warn">${esc(w)}</p>`).join('')}${fallback}
+        <div class="row"><button class="btn btn-primary" id="apply" type="button">Apply ${r.changes.length} change${r.changes.length > 1 ? 's' : ''}</button><span class="muted">Read by ${r.engine === 'rules' ? 'the built-in reader' : esc(r.engine)}. Nothing changes until you apply.</span></div>`;
+      $('apply').onclick = busy($('apply'), async () => {
+        await api('PUT', '/api/mandate', { ...r.proposed, plainText: text });
+        closeModals();
+        toast('Rules updated. Agents use them from their next purchase.');
+      });
+    } finally {
+      $('parse-status').textContent = '';
+    }
+  });
+  $('rules-form').onsubmit = act(async (e) => {
     e.preventDefault();
     const checked = (id) => [...$(id).querySelectorAll('input:checked')].map((i) => i.value);
     await api('PUT', '/api/mandate', {
       monthlyCap: $('f-monthly').value, perOrderCap: $('f-perorder').value, autoApproveBelow: $('f-auto').value,
-      maxPriceIncreasePct: $('f-drift').value, undoWindowSec: $('f-undo').value, active: $('f-active').checked,
+      maxPriceIncreasePct: $('f-drift').value, undoWindowSec: $('f-undo').value,
       allowedSupplierIds: checked('f-suppliers'), allowedCategories: checked('f-cats'),
     });
-    editing = false;
-    $('mandate-form').hidden = true;
-    $('rules').hidden = false;
-    notice('Mandate saved. The agent uses the new limits on its next run.');
+    closeModals();
+    toast('Rules saved.');
   });
 
-  // ---------- plain-English mandate ----------
-  $('plain-text').addEventListener('input', (e) => (e.target.dataset.dirty = '1'));
-  $('parse').onclick = act(async () => {
-    const text = $('plain-text').value.trim();
-    $('parse-status').textContent = 'Reading your mandate…';
-    $('parse').disabled = true;
-    try {
-      const r = await api('POST', '/api/mandate/parse', { text });
-      const box = $('diff');
-      box.hidden = false;
-      if (!r.changes.length) {
-        box.innerHTML = '<div class="foot">No changes. Your mandate already says this.</div>';
-        $('parse-status').textContent = '';
-        return;
-      }
-      box.innerHTML = `<div style="overflow-x:auto"><table><thead><tr><th>Rule</th><th>Now</th><th>After</th></tr></thead><tbody>
-        ${r.changes.map((c) => `<tr><td>${esc(c.label)}</td><td class="from">${esc(c.from)}</td><td class="to">${esc(c.to)}</td></tr>`).join('')}</tbody></table></div>
-        ${r.warnings.map((w) => `<div class="warn">${esc(w)}</div>`).join('')}
-        ${r.engineError ? `<div class="warn">${esc(r.engineError)}. Read by the rules parser instead; check the changes.</div>` : ''}
-        <div class="foot"><button class="btn small" id="apply">Apply ${r.changes.length} change${r.changes.length > 1 ? 's' : ''}</button><button class="btn ghost small" id="discard">Discard</button><span class="muted">Read by ${r.engine === 'rules' ? 'the rules parser' : esc(r.engine)}. Nothing changes until you apply.</span></div>`;
-      $('parse-status').textContent = '';
-      $('apply').onclick = act(async () => {
-        await api('PUT', '/api/mandate', { ...r.proposed, plainText: text });
-        delete $('plain-text').dataset.dirty;
-        box.hidden = true;
-        notice('Mandate updated. Agents use the new rules from their next purchase.');
+  // ---------- agent run ----------
+  document.querySelectorAll('#chips .chip').forEach((b) => { b.onclick = () => { $('instruction').value = b.textContent; $('instruction').focus(); }; });
+  $('run-form').onsubmit = act(async (e) => {
+    e.preventDefault();
+    $('feed').innerHTML = '';
+    $('feed-empty').hidden = true;
+    await api('POST', '/api/agent/run', { instruction: $('instruction').value.trim() });
+  });
+
+  function addStep(t) {
+    if (t.kind === 'done' || t.kind === 'start') return;
+    $('feed-empty').hidden = true;
+    const li = document.createElement('li');
+    let cls = '';
+    let ic = '•';
+    let html = esc(t.text);
+    if (t.kind === 'thought') { cls = 'think'; ic = 'AI'; }
+    if (t.kind === 'tool') { ic = '↻'; html = `<span class="muted">${esc(t.text)}</span>`; }
+    if (t.kind === 'proposal') {
+      cls = t.decision;
+      ic = { auto: '✓', needs_approval: '!', blocked: '✕' }[t.decision];
+      const label = { auto: 'Paid automatically.', needs_approval: 'Needs your OK.', blocked: 'Blocked.' }[t.decision];
+      const issue = (t.checks || []).filter((c) => (t.decision === 'blocked' ? c.status === 'block' : c.status === 'review')).map((c) => c.detail);
+      html = `<span class="who">${label}</span>${esc(t.text)}${issue.length ? `<div class="why">${esc(issue.join(' '))}</div>` : ''}`;
+    }
+    if (t.kind === 'finish') { cls = 'finish'; ic = '✓'; html = `<span class="who">Summary.</span>${esc(t.text)}`; }
+    if (t.kind === 'error') { cls = 'blocked'; ic = '✕'; }
+    li.className = cls;
+    li.innerHTML = `<span class="ic" aria-hidden="true">${ic}</span><div class="body">${html}</div>`;
+    $('feed').appendChild(li);
+    $('feed').scrollTop = $('feed').scrollHeight;
+  }
+
+  // ---------- toasts ----------
+  function toast(text, { error = false, action = null, ms = 6000 } = {}) {
+    const t = document.createElement('div');
+    t.className = `toast${error ? ' err' : ''}`;
+    t.setAttribute('role', error ? 'alert' : 'status');
+    const body = document.createElement('div');
+    body.textContent = text;
+    t.appendChild(body);
+    if (action) {
+      const b = document.createElement('button');
+      b.className = 'btn btn-sm';
+      b.type = 'button';
+      b.textContent = action.label;
+      b.onclick = busy(b, async () => { await action.run(); t.remove(); });
+      t.appendChild(b);
+    }
+    $('toasts').appendChild(t);
+    if (ms) setTimeout(() => t.remove(), ms);
+    return t;
+  }
+  const seenHolds = new Set();
+  let firstRender = true;
+  function toastNewHolds(orders) {
+    for (const o of orders) {
+      if (o.status !== 'AUTHORIZED' || seenHolds.has(o.id)) continue;
+      seenHolds.add(o.id);
+      if (firstRender) continue;
+      const t = toast(`${o.createdBy} paid ${eur(o.total)} to ${o.supplierName}.`, {
+        ms: 0,
+        action: { label: 'Undo', run: async () => { await api('POST', `/api/orders/${o.id}/undo`); toast('Undone. No money moved.'); } },
       });
-      $('discard').onclick = () => { box.hidden = true; delete $('plain-text').dataset.dirty; render(); };
-    } finally {
-      $('parse').disabled = false;
-      if ($('parse-status').textContent === 'Reading your mandate…') $('parse-status').textContent = '';
-    }
-  });
-
-  $('kill').onclick = act(async () => {
-    if (!state.mandate.active) {
-      await api('PUT', '/api/mandate', { active: true });
-      notice('Agents resumed.');
-      return;
-    }
-    const open = state.orders.filter((o) => o.status === 'AUTHORIZED');
-    const sum = open.reduce((a, o) => a + o.total, 0);
-    $('kill-q').textContent = open.length
-      ? `Stop every agent and void ${open.length} open PayPal authorization${open.length > 1 ? 's' : ''} (${eur(sum)})? Paid orders are not affected.`
-      : 'Stop every agent? Nothing is held right now, so no payment is voided.';
-    $('killbar').hidden = false;
-    $('kill-confirm').focus();
-  });
-  $('kill-cancel').onclick = () => { $('killbar').hidden = true; $('kill').focus(); };
-  $('kill-confirm').onclick = act(async () => {
-    $('kill-confirm').disabled = true;
-    try {
-      const r = await api('POST', '/api/kill');
-      $('killbar').hidden = true;
-      notice(`All agents stopped.${r.voided ? ` ${r.voided} PayPal authorization${r.voided > 1 ? 's' : ''} voided. No money moved.` : ''}`, true);
-    } finally {
-      $('kill-confirm').disabled = false;
-    }
-  });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('killbar').hidden) $('kill-cancel').click(); });
-
-  $('copy-mcp').onclick = async () => {
-    try { await navigator.clipboard.writeText($('mcp-config').textContent); notice('MCP config copied.'); }
-    catch { const r = document.createRange(); r.selectNodeContents($('mcp-config')); getSelection().removeAllRanges(); getSelection().addRange(r); }
-  };
-
-  // ---------- first-run steps ----------
-  function renderSteps(s) {
-    const steps = [
-      { done: Boolean(s.mandate.vaultId), title: 'Save PayPal for your agents', sub: 'Once. Small in-policy orders then pay without you.', go: '.mandate' },
-      { done: (s.mandate.version || 1) > 1, title: 'Check your mandate', sub: 'Write the rules in plain English.', go: '#plain-text' },
-      { done: s.orders.length > 0, title: 'Run the purchasing agent', sub: 'Watch every decision and undo any payment.', go: '#run' },
-    ];
-    const el = $('steps');
-    if (steps.every((x) => x.done)) { el.innerHTML = ''; return; }
-    const cur = steps.findIndex((x) => !x.done);
-    el.innerHTML = steps.map((x, i) => `<li class="${x.done ? 'done' : ''} ${i === cur ? 'current' : ''}"><button type="button" data-go="${x.go}"><b>${esc(x.title)}</b><span>${esc(x.sub)}</span></button></li>`).join('');
-    el.querySelectorAll('[data-go]').forEach((b) => (b.onclick = () => {
-      const t = document.querySelector(b.dataset.go);
-      t.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center' });
-      if (t.focus) setTimeout(() => t.focus({ preventScroll: true }), 300);
-    }));
-  }
-
-  // ---------- approval inbox ----------
-  function renderInbox(s) {
-    const waiting = s.orders.filter((o) => o.status === 'NEEDS_APPROVAL');
-    $('inbox').hidden = waiting.length === 0;
-    $('inbox-count').textContent = waiting.length ? `${waiting.length} waiting · ${eur(waiting.reduce((a, o) => a + o.total, 0))}` : '';
-    $('inbox-list').innerHTML = waiting.map((o) => {
-      const why = (o.checks || []).filter((c) => c.status === 'review').map((c) => c.label);
-      const extra = o.reasons.some((r) => r.code === 'VAULT_REFUSED') ? ['PayPal needs your approval'] : [];
-      return `<li>
-        <div class="ib-top"><b>${esc(o.supplierName)}</b><span class="amt">${eur(o.total)}</span></div>
-        <div class="why">${esc([...why, ...extra].join(' · ') || 'Needs your approval')}</div>
-        <div class="by">${esc(o.createdBy)} · ${esc(o.lines.map((l) => `${l.qty.toLocaleString('en')} × ${l.sku}`).join(', '))}</div>
-        <div class="row-inline"><button class="btn pp-btn small" data-approve="${esc(o.id)}">Approve in PayPal</button><button class="btn ghost small" data-reject="${esc(o.id)}">Reject</button><button class="btn ghost small" data-open="${esc(o.id)}">Why?</button></div>
-      </li>`;
-    }).join('');
-    document.querySelectorAll('[data-approve]').forEach((b) => (b.onclick = act(async () => {
-      b.disabled = true;
-      try { const r = await api('POST', `/api/orders/${b.dataset.approve}/approve`); location.href = r.approveUrl; } finally { b.disabled = false; }
-    })));
-    document.querySelectorAll('[data-reject]').forEach((b) => (b.onclick = act(() => api('POST', `/api/orders/${b.dataset.reject}/reject`))));
-    document.querySelectorAll('[data-open]').forEach((b) => (b.onclick = () => {
-      selectedId = b.dataset.open;
-      renderDetail();
-      $('detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }));
-  }
-
-  // ---------- toasts: every new agent payment gets an Undo ----------
-  const seenAuth = new Set();
-  let firstState = true;
-  function toastNew(list) {
-    for (const o of list) {
-      if (o.status !== 'AUTHORIZED' || seenAuth.has(o.id)) continue;
-      seenAuth.add(o.id);
-      if (firstState) continue;
-      const t = document.createElement('div');
-      t.className = 'toast';
-      t.innerHTML = `<div>${esc(o.createdBy)} paid ${eur(o.total)} to ${esc(o.supplierName)}<small data-left></small></div><button class="btn">Undo</button>`;
-      t.querySelector('button').onclick = act(async () => { await api('POST', `/api/orders/${o.id}/undo`); t.remove(); notice(`${o.id} undone. No money moved.`); });
-      $('toasts').appendChild(t);
+      const small = document.createElement('small');
+      t.firstChild.appendChild(small);
       const tick = () => {
         const cur = state.orders.find((x) => x.id === o.id);
         const left = cur ? secondsLeft(cur) : 0;
         if (!cur || cur.status !== 'AUTHORIZED' || left <= 0) { t.remove(); clearInterval(iv); return; }
-        t.querySelector('[data-left]').textContent = `Undo open for ${left}s`;
+        small.textContent = `On hold in PayPal · undo within ${left}s`;
       };
       const iv = setInterval(tick, 1000);
       tick();
     }
-    firstState = false;
+    firstRender = false;
   }
+  setInterval(() => {
+    if (!state) return;
+    document.querySelectorAll('[data-left]').forEach((el) => {
+      const o = state.orders.find((x) => x.id === el.dataset.left);
+      if (o) el.textContent = `${secondsLeft(o)}s`;
+    });
+  }, 1000);
 
-  // ---------- agent ----------
-  document.querySelectorAll('#chips .chip').forEach((b) => (b.onclick = () => ($('instruction').value = b.textContent)));
-  $('run-form').onsubmit = act(async (e) => {
-    e.preventDefault();
-    $('trace').innerHTML = '';
-    await api('POST', '/api/agent/run', { instruction: $('instruction').value.trim() });
-  });
-
-  const KIND = { start: 'Start', tool: 'Reads', thought: 'Thinks', proposal: 'Proposes', finish: 'Summary', error: 'Error' };
-  function addTrace(t) {
-    if (t.kind === 'done') return;
-    const li = document.createElement('li');
-    let cls = t.kind;
-    let label = KIND[t.kind] || t.kind;
-    let extra = '';
-    if (t.kind === 'proposal') {
-      cls += ' ' + t.decision;
-      label = { auto: 'Auto-pay', needs_approval: 'Needs you', blocked: 'Blocked' }[t.decision];
-      if (t.reasons && t.reasons.length) extra = `<ul>${t.reasons.map((r) => `<li>${esc(r.message)}</li>`).join('')}</ul>`;
-      if (t.checks) {
-        const passed = t.checks.filter((c) => c.status === 'pass').length;
-        extra += `<div class="chipline"><span>${passed}/${t.checks.filter((c) => c.status !== 'skip').length} rules passed</span>${t.checks.filter((c) => c.status === 'review' || c.status === 'block').map((c) => `<span class="${c.status}">${esc(c.label)}</span>`).join('')}</div>`;
-      }
+  // ---------- guided tour ----------
+  const TOUR = [
+    { el: null, title: 'Welcome to Mandate', text: 'AI agents are starting to buy things for businesses. Mandate lets them pay through PayPal, but only within rules you set, with every payment explained and undoable. This demo uses the PayPal sandbox and fake money.' },
+    { el: 'card-paypal', title: 'Save PayPal once', text: 'You approve in PayPal one time. After that, agents can pay small orders without you, like a company card with your rules attached.' },
+    { el: 'card-rules', title: 'Your rules', text: 'Budget, largest order, what can be paid without asking, approved suppliers. Write them in plain English and AI turns them into exact rules. You see every change before it applies.' },
+    { el: 'card-agent', title: 'Run the agent', text: 'The agent checks stock and proposes orders. AI suggests, but plain code checks every order against your rules. Try the Black Friday example.' },
+    { el: 'card-payments', title: 'Every payment, explained', text: 'Small orders are paid but held by PayPal for a minute, so you can undo them. Anything unusual waits for you. Click a payment to see exactly which rule decided.' },
+    { el: 'card-agents', title: 'Any agent, same rules', text: 'Connect Claude Desktop or any agent through MCP, or wrap PayPal’s own Agent Toolkit. Each agent has its own budget and can never change your rules.' },
+    { el: 'kill', title: 'One button stops everything', text: 'Stops every agent and cancels every payment still on hold in PayPal.' },
+  ];
+  let tourAt = 0;
+  let tourTimer = null;
+  function placeTour() {
+    const step = TOUR[tourAt];
+    $('tour-step').textContent = `Step ${tourAt + 1} of ${TOUR.length}`;
+    $('tour-title').textContent = step.title;
+    $('tour-text').textContent = step.text;
+    $('tour-back').hidden = tourAt === 0;
+    $('tour-next').textContent = tourAt === TOUR.length - 1 ? 'Finish' : 'Next';
+    const hole = $('tour-hole');
+    const pop = $('tour-pop');
+    const target = step.el && $(step.el);
+    const w = Math.min(360, innerWidth - 32);
+    clearTimeout(tourTimer);
+    if (!target || target.offsetParent === null) {
+      hole.style.cssText = `top:${innerHeight / 2}px;left:${innerWidth / 2}px;width:0;height:0;`;
+      pop.style.top = `${Math.max(16, innerHeight / 2 - 120)}px`;
+      pop.style.left = `${Math.max(16, (innerWidth - w) / 2)}px`;
+      return;
     }
-    if (t.kind === 'start') label = { anthropic: 'Claude', gemini: 'Gemini', groq: 'Llama' }[t.engine] || 'Planner';
-    li.className = cls;
-    li.innerHTML = `<span class="k">${esc(label)}</span><div>${esc(t.text)}${extra}</div>`;
-    const list = $('trace');
-    const empty = list.querySelector('.empty');
-    if (empty) empty.remove();
-    list.appendChild(li);
-    list.scrollTop = list.scrollHeight;
+    target.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    tourTimer = setTimeout(() => {
+      const r = target.getBoundingClientRect();
+      const pad = 8;
+      hole.style.cssText = `top:${r.top - pad}px;left:${r.left - pad}px;width:${r.width + pad * 2}px;height:${r.height + pad * 2}px;`;
+      let left;
+      let top;
+      if (r.right + 16 + w < innerWidth) { left = r.right + 16; top = r.top; }
+      else if (r.left - 16 - w > 0) { left = r.left - 16 - w; top = r.top; }
+      else { left = Math.min(innerWidth - w - 16, Math.max(16, r.left)); top = r.bottom + 16; }
+      if (top + 240 > innerHeight) top = Math.max(16, innerHeight - 256);
+      pop.style.top = `${Math.max(16, top)}px`;
+      pop.style.left = `${left}px`;
+    }, 380);
   }
-
-  $('reset').onclick = act(async () => {
-    await api('POST', '/api/reset');
-    selectedId = null;
-    $('trace').innerHTML = '<li class="empty">The agent\'s reasoning and every mandate decision appear here.</li>';
-    notice('Demo data reset.');
+  function startTour() {
+    tourAt = 0;
+    closeDrawer();
+    closeModals();
+    $('tour').hidden = false;
+    placeTour();
+    $('tour-next').focus();
+  }
+  function endTour() {
+    $('tour').hidden = true;
+    local.set('mandate.tour', 'done');
+  }
+  $('tour-next').onclick = () => { if (tourAt === TOUR.length - 1) { endTour(); return; } tourAt += 1; placeTour(); };
+  $('tour-back').onclick = () => { tourAt = Math.max(0, tourAt - 1); placeTour(); };
+  $('tour-skip').onclick = endTour;
+  addEventListener('resize', () => { if (!$('tour').hidden) placeTour(); });
+  $('tour-btn').onclick = startTour;
+  $('welcome-tour').onclick = startTour;
+  $('welcome-close').onclick = () => { local.set('mandate.welcome', 'closed'); render(); };
+  $('steps').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-go]');
+    if (!b) return;
+    const t = $(b.dataset.go);
+    t.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const focusable = t.querySelector('button, input');
+    if (focusable) setTimeout(() => focusable.focus({ preventScroll: true }), 400);
   });
 
   // ---------- live updates ----------
@@ -445,15 +649,8 @@
       skew = new Date(state.serverTime) - Date.now();
       render();
     });
-    es.addEventListener('trace', (e) => addTrace(JSON.parse(e.data)));
+    es.addEventListener('trace', (e) => addStep(JSON.parse(e.data)));
     es.onerror = () => { es.close(); setTimeout(connect, 2000); };
   }
   connect();
-
-  setInterval(() => {
-    document.querySelectorAll('[data-undo]').forEach((b) => {
-      const o = state && state.orders.find((x) => x.id === b.dataset.undo);
-      if (o) b.textContent = `Undo · ${secondsLeft(o)}s`;
-    });
-  }, 1000);
 })();

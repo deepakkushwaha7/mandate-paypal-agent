@@ -65,8 +65,8 @@ class Orders {
       error: null,
     };
     this.state.orders.unshift(order);
-    const label = { BLOCKED: 'blocked by the mandate', PAYING: 'within mandate, paying automatically', NEEDS_APPROVAL: 'needs human approval' }[status];
-    this.store.audit(actor, 'order.proposed', `${order.id} to ${order.supplierName}, ${eur(order.total)}: ${label}.`, order.id);
+    const label = { BLOCKED: 'blocked by your rules', PAYING: 'within your rules, paying now', NEEDS_APPROVAL: 'waiting for your OK' }[status];
+    this.store.audit(actor, 'order.proposed', `${order.supplierName}, ${eur(order.total)}: ${label}.`, order.id);
     this.store.save();
     return order;
   }
@@ -86,7 +86,7 @@ class Orders {
         const msg = 'PayPal refused to charge the saved account, so this order needs approval in PayPal.';
         order.reasons = [...order.reasons, { code: 'VAULT_REFUSED', severity: 'review', message: msg }];
         if (order.checks) order.checks = order.checks.map((c) => (c.code === 'NO_VAULT' ? { ...c, status: 'review', detail: msg } : c));
-        this.store.audit('PayPal', 'vault.refused', `${order.id}: ${e.message}. Switched to approval in PayPal.`, order.id);
+        this.store.audit('PayPal', 'vault.refused', `${order.supplierName}: PayPal asked for your approval instead of paying automatically.`, order.id);
         this.store.save();
       } else {
         this.fail(order, e);
@@ -111,7 +111,7 @@ class Orders {
         this.store.audit('PayPal', 'payment.void_failed', `${o.id}: ${e.message}`, o.id);
       }
     }
-    this.store.audit(actor, 'mandate.killed', `Kill switch: all agents paused${voided ? `, ${voided} open authorization${voided > 1 ? 's' : ''} voided` : ''}.`);
+    this.store.audit(actor, 'mandate.killed', `Stopped all agents${voided ? ` and cancelled ${voided} payment${voided > 1 ? 's' : ''} on hold` : ''}.`);
     this.store.save();
     return { voided };
   }
@@ -132,7 +132,7 @@ class Orders {
     };
     const next = map[event.event_type];
     if (next && order.status !== next) {
-      this.store.audit('PayPal webhook', 'webhook.applied', `${order.id}: ${event.event_type} (was ${order.status}).`, order.id);
+      this.store.audit('PayPal webhook', 'webhook.applied', `${order.supplierName}: PayPal confirmed ${event.event_type.toLowerCase().replace(/^payment\./, '').replace(/[._]/g, ' ')}.`, order.id);
       order.status = next;
       if (next !== 'CAPTURED') order.undoUntil = null;
       this.store.save();
@@ -146,14 +146,14 @@ class Orders {
     order.status = 'AUTHORIZED';
     order.undoUntil = new Date(Date.now() + this.state.mandate.undoWindowSec * 1000).toISOString();
     order.approveUrl = null;
-    this.store.audit(actor, 'payment.authorized', `${order.id}: PayPal authorization ${r.authorizationId} for ${eur(order.total)}. Undo open for ${this.state.mandate.undoWindowSec}s.`, order.id);
+    this.store.audit(actor, 'payment.authorized', `${order.supplierName}, ${eur(order.total)}: paid and on hold in PayPal. Can be undone for ${this.state.mandate.undoWindowSec} seconds.`, order.id);
     this.store.save();
   }
 
   fail(order, e) {
     order.status = 'FAILED';
     order.error = e.message;
-    this.store.audit('PayPal', 'payment.failed', `${order.id}: ${e.message}`, order.id);
+    this.store.audit('PayPal', 'payment.failed', `${order.supplierName}: payment failed. ${e.message}`, order.id);
     this.store.save();
   }
 
@@ -173,7 +173,7 @@ class Orders {
     });
     order.paypal.orderId = r.paypalOrderId;
     order.approveUrl = r.approveUrl;
-    this.store.audit(this.state.company.buyer, 'approval.started', `${order.id}: sent to PayPal for approval.`, order.id);
+    this.store.audit(this.state.company.buyer, 'approval.started', `${order.supplierName}, ${eur(order.total)}: opened PayPal to approve.`, order.id);
     this.store.save();
     return r.approveUrl;
   }
@@ -197,7 +197,7 @@ class Orders {
     const order = this.store.order(orderId);
     if (order && order.status === 'NEEDS_APPROVAL') {
       order.approveUrl = null;
-      this.store.audit(this.state.company.buyer, 'approval.cancelled', `${order.id}: approval cancelled in PayPal. Still waiting.`, order.id);
+      this.store.audit(this.state.company.buyer, 'approval.cancelled', `${order.supplierName}: approval cancelled. Still waiting for you.`, order.id);
       this.store.save();
     }
   }
@@ -206,7 +206,7 @@ class Orders {
     if (order.status !== 'NEEDS_APPROVAL') throw new Error(`${order.id} is ${order.status}; only orders waiting for approval can be rejected.`);
     order.status = 'REJECTED';
     order.approveUrl = null;
-    this.store.audit(this.state.company.buyer, 'order.rejected', `${order.id} rejected.`, order.id);
+    this.store.audit(this.state.company.buyer, 'order.rejected', `${order.supplierName}, ${eur(order.total)}: declined. Nothing was charged.`, order.id);
     this.store.save();
     return order;
   }
@@ -216,13 +216,13 @@ class Orders {
       await this.paypal.voidAuthorization(order.paypal.authorizationId);
       order.status = 'VOIDED';
       order.undoUntil = null;
-      this.store.audit(actor, 'payment.voided', `${order.id}: undone. PayPal authorization ${order.paypal.authorizationId} voided, no money moved.`, order.id);
+      this.store.audit(actor, 'payment.voided', `${order.supplierName}, ${eur(order.total)}: undone. PayPal cancelled the hold, no money moved.`, order.id);
     } else if (order.status === 'CAPTURED') {
       const r = await this.paypal.refundCapture(order.paypal.captureId, order);
       order.status = 'REFUNDED';
       order.paypal.refundId = r.refundId;
       this.receive(order, -1);
-      this.store.audit(actor, 'payment.refunded', `${order.id}: undone after capture. Refund ${r.refundId} for ${eur(order.total)}.`, order.id);
+      this.store.audit(actor, 'payment.refunded', `${order.supplierName}, ${eur(order.total)}: refunded through PayPal.`, order.id);
     } else {
       throw new Error(`${order.id} is ${order.status} and cannot be undone.`);
     }
@@ -254,11 +254,11 @@ class Orders {
         // Demo shortcut: treat the stock as received on capture so the
         // agent sees the new cover on its next run.
         this.receive(order, 1);
-        this.store.audit('PayPal', 'payment.captured', `${order.id}: captured ${r.captureId}, ${eur(order.total)} paid to ${order.supplierName}.`, order.id);
+        this.store.audit('PayPal', 'payment.captured', `${order.supplierName}, ${eur(order.total)}: undo window closed, payment completed.`, order.id);
       } catch (e) {
         order.status = 'AUTHORIZED';
         order.error = e.message;
-        this.store.audit('PayPal', 'payment.capture_failed', `${order.id}: ${e.message}`, order.id);
+        this.store.audit('PayPal', 'payment.capture_failed', `${order.supplierName}: payment failed. ${e.message}`, order.id);
       } finally {
         busy.delete(order.id);
       }

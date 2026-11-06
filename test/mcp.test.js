@@ -23,7 +23,7 @@ test('MCP: an external agent buys through the mandate', async () => {
     assert.match(ok.content[0].text, /Paid via PayPal/);
     const bad = await client.callTool({ name: 'purchase', arguments: { lines: [{ sku: 'TOTE-CANVAS', qty: 100 }], note: 'Totes' } });
     assert.match(bad.content[0].text, /Blocked by the spending mandate/);
-    assert.match(bad.content[0].text, /Supplier is approved/);
+    assert.match(bad.content[0].text, /Approved supplier/);
   } finally {
     await client.close();
     server.close();

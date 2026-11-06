@@ -7,11 +7,11 @@
 const llm = require('./llm');
 
 const FIELDS = {
-  monthlyCap: 'Monthly cap',
-  perOrderCap: 'Per-order cap',
-  autoApproveBelow: 'Auto-pay below',
-  maxPriceIncreasePct: 'Max supplier price rise',
-  undoWindowSec: 'Undo window',
+  monthlyCap: 'Monthly budget',
+  perOrderCap: 'Largest single order',
+  autoApproveBelow: 'Pays without asking below',
+  maxPriceIncreasePct: 'Asks you if a price rises over',
+  undoWindowSec: 'Time to undo a payment',
   allowedSupplierIds: 'Approved suppliers',
   allowedCategories: 'Approved categories',
   active: 'Agents may spend',
@@ -86,9 +86,9 @@ async function parseModel(text, state) {
 function diff(mandate, proposed, state) {
   const fmt = (k, v) => {
     if (k === 'allowedSupplierIds') return v.map((id) => (state.suppliers.find((s) => s.id === id) || {}).name || id).join(', ');
-    if (k === 'allowedCategories') return v.join(', ');
+    if (k === 'allowedCategories') return v.map((c) => c[0].toUpperCase() + c.slice(1)).join(', ');
     if (k === 'maxPriceIncreasePct') return `${v}%`;
-    if (k === 'undoWindowSec') return `${v}s`;
+    if (k === 'undoWindowSec') return `${v} seconds`;
     if (k === 'active') return v ? 'Yes' : 'No (paused)';
     return `€${Number(v).toLocaleString('en-IE')}`;
   };
@@ -134,8 +134,8 @@ async function parseMandate(text, state) {
   const proposed = validate(raw, state);
   const warnings = [];
   const next = { ...state.mandate, ...proposed };
-  if (next.autoApproveBelow > next.perOrderCap) warnings.push('Auto-pay limit is higher than the per-order cap, so the cap wins.');
-  if (next.perOrderCap > next.monthlyCap) warnings.push('Per-order cap is higher than the monthly cap.');
+  if (next.autoApproveBelow > next.perOrderCap) warnings.push('The pay-without-asking limit is higher than the largest order, so the largest order wins.');
+  if (next.perOrderCap > next.monthlyCap) warnings.push('The largest single order is higher than the monthly budget.');
   return { engine, engineError, proposed, changes: diff(state.mandate, proposed, state), warnings };
 }
 
