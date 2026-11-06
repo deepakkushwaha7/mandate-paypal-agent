@@ -16,7 +16,7 @@ const FIELDS = {
 };
 
 function num(s) {
-  if (s == null) return null;
+  if (s === null || s === undefined) return null;
   let t = String(s).toLowerCase().replace(/[€$,\s]/g, '').replace(/eur/, '');
   let mult = 1;
   if (t.endsWith('k')) { mult = 1000; t = t.slice(0, -1); }

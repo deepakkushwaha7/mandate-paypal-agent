@@ -1,4 +1,3 @@
-/* global agGrid */
 (() => {
   const $ = (id) => document.getElementById(id);
   const eur = (n) => '€' + Number(n || 0).toLocaleString('en-IE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -91,7 +90,7 @@
       { field: 'supplierName', headerName: 'Supplier', flex: 1, minWidth: 150 },
       { headerName: 'Lines', flex: 1.4, minWidth: 180, valueGetter: (p) => p.data.lines.map((l) => `${l.qty.toLocaleString('en')} × ${l.sku}`).join(', ') },
       { field: 'total', headerName: 'Total', width: 110, type: 'rightAligned', cellClass: 'mono', valueFormatter: (p) => eur(p.value) },
-      { field: 'createdBy', headerName: 'By', width: 80 },
+      { field: 'createdBy', headerName: 'Agent', width: 140 },
       { field: 'status', headerName: 'Status', width: 130, cellRenderer: (p) => `<span class="status s-${p.value}">${STATUS_LABEL[p.value] || p.value}</span>` },
       { headerName: '', colId: 'actions', minWidth: 210, flex: 1, sortable: false, cellRenderer: actionsRenderer },
     ],
@@ -169,6 +168,8 @@
     document.querySelectorAll('[data-agent]').forEach((el) => (el.onchange = act(() => api('PATCH', `/api/agents/${el.dataset.agent}`, { active: el.checked }))));
     $('mcp-config').textContent = JSON.stringify({ mcpServers: { mandate: { command: 'node', args: ['/path/to/mandate/src/mcp.js'], env: { MANDATE_URL: location.origin, MANDATE_AGENT_ID: 'claude-desktop' } } } }, null, 2);
     toastNew(s.orders);
+    renderSteps(s);
+    renderInbox(s);
 
     // run button
     $('run').disabled = s.running;
@@ -293,19 +294,81 @@
   });
 
   $('kill').onclick = act(async () => {
-    if (state.mandate.active) {
-      const r = await api('POST', '/api/kill');
-      notice(`All agents stopped.${r.voided ? ` ${r.voided} open PayPal authorization${r.voided > 1 ? 's' : ''} voided.` : ''}`, true);
-    } else {
+    if (!state.mandate.active) {
       await api('PUT', '/api/mandate', { active: true });
       notice('Agents resumed.');
+      return;
+    }
+    const open = state.orders.filter((o) => o.status === 'AUTHORIZED');
+    const sum = open.reduce((a, o) => a + o.total, 0);
+    $('kill-q').textContent = open.length
+      ? `Stop every agent and void ${open.length} open PayPal authorization${open.length > 1 ? 's' : ''} (${eur(sum)})? Paid orders are not affected.`
+      : 'Stop every agent? Nothing is held right now, so no payment is voided.';
+    $('killbar').hidden = false;
+    $('kill-confirm').focus();
+  });
+  $('kill-cancel').onclick = () => { $('killbar').hidden = true; $('kill').focus(); };
+  $('kill-confirm').onclick = act(async () => {
+    $('kill-confirm').disabled = true;
+    try {
+      const r = await api('POST', '/api/kill');
+      $('killbar').hidden = true;
+      notice(`All agents stopped.${r.voided ? ` ${r.voided} PayPal authorization${r.voided > 1 ? 's' : ''} voided. No money moved.` : ''}`, true);
+    } finally {
+      $('kill-confirm').disabled = false;
     }
   });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('killbar').hidden) $('kill-cancel').click(); });
 
   $('copy-mcp').onclick = async () => {
     try { await navigator.clipboard.writeText($('mcp-config').textContent); notice('MCP config copied.'); }
-    catch (_) { const r = document.createRange(); r.selectNodeContents($('mcp-config')); getSelection().removeAllRanges(); getSelection().addRange(r); }
+    catch { const r = document.createRange(); r.selectNodeContents($('mcp-config')); getSelection().removeAllRanges(); getSelection().addRange(r); }
   };
+
+  // ---------- first-run steps ----------
+  function renderSteps(s) {
+    const steps = [
+      { done: Boolean(s.mandate.vaultId), title: 'Save PayPal for your agents', sub: 'Once. Small in-policy orders then pay without you.', go: '.mandate' },
+      { done: (s.mandate.version || 1) > 1, title: 'Check your mandate', sub: 'Write the rules in plain English.', go: '#plain-text' },
+      { done: s.orders.length > 0, title: 'Run the purchasing agent', sub: 'Watch every decision and undo any payment.', go: '#run' },
+    ];
+    const el = $('steps');
+    if (steps.every((x) => x.done)) { el.innerHTML = ''; return; }
+    const cur = steps.findIndex((x) => !x.done);
+    el.innerHTML = steps.map((x, i) => `<li class="${x.done ? 'done' : ''} ${i === cur ? 'current' : ''}"><button type="button" data-go="${x.go}"><b>${esc(x.title)}</b><span>${esc(x.sub)}</span></button></li>`).join('');
+    el.querySelectorAll('[data-go]').forEach((b) => (b.onclick = () => {
+      const t = document.querySelector(b.dataset.go);
+      t.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'center' });
+      if (t.focus) setTimeout(() => t.focus({ preventScroll: true }), 300);
+    }));
+  }
+
+  // ---------- approval inbox ----------
+  function renderInbox(s) {
+    const waiting = s.orders.filter((o) => o.status === 'NEEDS_APPROVAL');
+    $('inbox').hidden = waiting.length === 0;
+    $('inbox-count').textContent = waiting.length ? `${waiting.length} waiting · ${eur(waiting.reduce((a, o) => a + o.total, 0))}` : '';
+    $('inbox-list').innerHTML = waiting.map((o) => {
+      const why = (o.checks || []).filter((c) => c.status === 'review').map((c) => c.label);
+      const extra = o.reasons.some((r) => r.code === 'VAULT_REFUSED') ? ['PayPal needs your approval'] : [];
+      return `<li>
+        <div class="ib-top"><b>${esc(o.supplierName)}</b><span class="amt">${eur(o.total)}</span></div>
+        <div class="why">${esc([...why, ...extra].join(' · ') || 'Needs your approval')}</div>
+        <div class="by">${esc(o.createdBy)} · ${esc(o.lines.map((l) => `${l.qty.toLocaleString('en')} × ${l.sku}`).join(', '))}</div>
+        <div class="row-inline"><button class="btn pp-btn small" data-approve="${esc(o.id)}">Approve in PayPal</button><button class="btn ghost small" data-reject="${esc(o.id)}">Reject</button><button class="btn ghost small" data-open="${esc(o.id)}">Why?</button></div>
+      </li>`;
+    }).join('');
+    document.querySelectorAll('[data-approve]').forEach((b) => (b.onclick = act(async () => {
+      b.disabled = true;
+      try { const r = await api('POST', `/api/orders/${b.dataset.approve}/approve`); location.href = r.approveUrl; } finally { b.disabled = false; }
+    })));
+    document.querySelectorAll('[data-reject]').forEach((b) => (b.onclick = act(() => api('POST', `/api/orders/${b.dataset.reject}/reject`))));
+    document.querySelectorAll('[data-open]').forEach((b) => (b.onclick = () => {
+      selectedId = b.dataset.open;
+      renderDetail();
+      $('detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }));
+  }
 
   // ---------- toasts: every new agent payment gets an Undo ----------
   const seenAuth = new Set();

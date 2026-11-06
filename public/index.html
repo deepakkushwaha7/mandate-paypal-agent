@@ -21,7 +21,12 @@
   <button class="btn ghost small" id="reset" title="Restore the demo data">Reset demo</button>
 </header>
 
-<div id="notice" class="notice" hidden></div>
+<div id="notice" class="notice" hidden role="status"></div>
+<div id="killbar" class="killbar" hidden role="alertdialog" aria-labelledby="kill-q">
+  <p id="kill-q"></p>
+  <div class="row-inline"><button class="btn danger" id="kill-confirm">Stop all agents</button><button class="btn ghost" id="kill-cancel">Cancel</button></div>
+</div>
+<ol id="steps" class="steps" aria-label="Get started"></ol>
 
 <main class="layout">
   <section class="card budget" aria-labelledby="h-budget">
@@ -86,6 +91,11 @@
   <section class="card stock" aria-labelledby="h-stock">
     <div class="card-head"><h2 id="h-stock">Stock cover</h2><span class="muted">days left vs. reorder point</span></div>
     <ul class="cover" id="cover"></ul>
+  </section>
+
+  <section class="card inbox" id="inbox" aria-labelledby="h-inbox" hidden>
+    <div class="card-head"><h2 id="h-inbox">Needs you</h2><span class="muted" id="inbox-count"></span></div>
+    <ul class="inbox-list" id="inbox-list"></ul>
   </section>
 
   <section class="card orders" aria-labelledby="h-orders">

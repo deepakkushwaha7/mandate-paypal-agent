@@ -4,8 +4,9 @@ const { Store } = require('./store');
 const { createPayPal } = require('./paypal');
 const { Orders } = require('./orders');
 const { runAgent, stockView, mandateView } = require('./agent');
-const { spentThisMonth, evaluate } = require('./policy');
+const { spentThisMonth, evaluate, eur } = require('./policy');
 const { parseMandate } = require('./mandate-text');
+const security = require('./security');
 
 function createApp(opts = {}) {
   const port = opts.port || process.env.PORT || 3000;
@@ -15,8 +16,13 @@ function createApp(opts = {}) {
   const orders = new Orders({ store, paypal, baseUrl });
 
   const app = express();
-  app.use(express.json());
-  app.use(express.urlencoded({ extended: false }));
+  app.disable('x-powered-by');
+  app.set('trust proxy', 1);
+  app.use(security.headers);
+  app.use('/api', security.rateLimit({ max: Number(process.env.RATE_LIMIT_PER_MIN) || 240 }));
+  app.use(express.json({ limit: '64kb' }));
+  app.use(express.urlencoded({ extended: false, limit: '16kb' }));
+  app.use(security.sameOrigin);
   app.use(express.static(path.join(__dirname, '..', 'public')));
   app.use('/vendor/ag-grid', express.static(path.join(__dirname, '..', 'node_modules', 'ag-grid-community')));
 
@@ -44,6 +50,7 @@ function createApp(opts = {}) {
     const s = store.state;
     return {
       company: s.company,
+      demoMode: process.env.DEMO_MODE !== 'false',
       mode: { paypal: paypal.mode, agent: process.env.ANTHROPIC_API_KEY ? 'claude' : 'rules', model: process.env.ANTHROPIC_API_KEY ? (process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5') : null },
       mandate: { ...s.mandate, view: mandateView(s), spent: spentThisMonth(s) },
       suppliers: s.suppliers,
@@ -177,7 +184,7 @@ function createApp(opts = {}) {
     const a = agentAuth(req);
     const v = evaluate(store.state, { agentId: a.id, lines: req.body.lines, note: req.body.note });
     send('trace', { runId: 'external', at: new Date().toISOString(), kind: 'proposal', decision: v.decision, total: v.total,
-      text: `${a.name} requested ${v.lines.map((l) => `${l.qty.toLocaleString('en')} × ${l.sku}`).join(', ') || 'nothing valid'} for €${v.total.toFixed(2)}.`, reasons: v.reasons, checks: v.checks });
+      text: `${a.name} requested ${v.lines.map((l) => `${l.qty.toLocaleString('en')} × ${l.sku}`).join(', ') || 'nothing valid'} for ${eur(v.total)}.`, reasons: v.reasons, checks: v.checks });
     const order = orders.create(v, { note: req.body.note || '' });
     if (order.status === 'PAYING') await orders.payAuto(order);
     res.json({ orderId: order.id, status: order.status, decision: v.decision, total: v.total, checks: v.checks, undoUntil: order.undoUntil });
@@ -231,11 +238,18 @@ function createApp(opts = {}) {
     return o;
   };
   app.post('/api/orders/:id/approve', wrap(async (req, res) => {
-    const url = await orders.startApproval(find(req));
+    const o = find(req);
+    const url = await orders.lock(o.id, () => orders.startApproval(o));
     res.json({ approveUrl: url });
   }));
-  app.post('/api/orders/:id/reject', wrap(async (req, res) => res.json(orders.reject(find(req)))));
-  app.post('/api/orders/:id/undo', wrap(async (req, res) => res.json(await orders.undo(find(req), store.state.company.buyer))));
+  app.post('/api/orders/:id/reject', wrap(async (req, res) => {
+    const o = find(req);
+    res.json(await orders.lock(o.id, async () => orders.reject(o)));
+  }));
+  app.post('/api/orders/:id/undo', wrap(async (req, res) => {
+    const o = find(req);
+    res.json(await orders.lock(o.id, () => orders.undo(o, store.state.company.buyer)));
+  }));
 
   app.get('/paypal/order/return', wrap(async (req, res) => {
     await orders.completeApproval(String(req.query.ref));
@@ -247,6 +261,7 @@ function createApp(opts = {}) {
   });
 
   app.post('/api/reset', wrap(async (req, res) => {
+    if (process.env.DEMO_MODE === 'false') throw new Error('Reset is turned off outside demo mode.');
     if (running) throw new Error('Wait for the agent to finish.');
     const keepVault = store.state.mandate.vaultId && paypal.mode !== 'simulated' ? { vaultId: store.state.mandate.vaultId, vaultLabel: store.state.mandate.vaultLabel } : null;
     store.reset();

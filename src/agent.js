@@ -7,7 +7,7 @@
 // Without it, a deterministic planner follows the same tool protocol, so
 // the demo and tests run offline.
 
-const { evaluate, spentThisMonth, round2 } = require('./policy');
+const { evaluate, spentThisMonth, round2, eur } = require('./policy');
 
 const SAFETY_DAYS = 7;
 const COVER_DAYS = 30;
@@ -155,9 +155,9 @@ async function runHeuristic({ state, instruction, emit, submit }) {
       emit({ kind: 'thought', text: `Blocked by the mandate, so I will not place it: ${hard.join(' ')}` });
       notes.push(`Could not order from ${sup.name}: ${hard[0]}`);
     } else if (verdict.decision === 'needs_approval') {
-      notes.push(`${sup.name} order (€${verdict.total.toFixed(2)}) needs your approval.`);
+      notes.push(`${sup.name} order (${eur(verdict.total)}) needs your approval.`);
     } else {
-      notes.push(`${sup.name} order (€${verdict.total.toFixed(2)}) paid automatically.`);
+      notes.push(`${sup.name} order (${eur(verdict.total)}) paid automatically.`);
     }
   }
   const summary = notes.join(' ');
@@ -225,7 +225,7 @@ async function runAgent({ state, instruction, emit, onProposal }) {
       kind: 'proposal',
       decision: v.decision,
       total: v.total,
-      text: `Proposed ${v.lines.map((l) => `${l.qty.toLocaleString('en')} × ${l.sku}`).join(', ') || 'nothing valid'} for €${v.total.toFixed(2)}.`,
+      text: `Proposed ${v.lines.map((l) => `${l.qty.toLocaleString('en')} × ${l.sku}`).join(', ') || 'nothing valid'} for ${eur(v.total)}.`,
       reasons: v.reasons,
       checks: v.checks,
     });

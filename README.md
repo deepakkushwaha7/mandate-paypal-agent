@@ -10,6 +10,24 @@ Mandate fixes the trust problem with three ideas:
 2. **Code, not the model, decides what gets paid.** The agent only proposes SKUs and quantities. A deterministic mandate engine prices every proposal from the catalogue and returns `auto`, `needs_approval` or `blocked`, with the reasons. The agent reads the verdict and corrects itself or reports why it gave up.
 3. **Every agent payment can be undone.** Payments are PayPal *authorizations*, not captures. For the undo window (default 60 seconds) the buyer can void with one tap and no money moves. After capture, Undo becomes a refund.
 
+## Why this matters
+
+PayPal's Agent Toolkit and MCP servers let agents create orders, invoices and refunds, but they have **no built-in human-confirmation gate or spending limits**. Developers must build their own ([Vorp Labs review](https://vorplabs.com/agent-tools/paypal-agent-toolkit)). Meanwhile about three-quarters of consumers won't let an agent pay on its own, even with preset limits (Forrester, April 2026). Mandate is that missing layer, and it answers the three trust problems people name most often:
+
+| Problem | What Mandate does |
+| --- | --- |
+| Agents split purchases to stay under limits | The auto-pay limit applies to the **rolling 24-hour total per supplier** |
+| Logs show what happened, not why it was allowed | Every order has a **decision receipt**: all 14 rules, pass / needs a human / blocked, mandate version and the agent's own reason |
+| No real kill switch | **Stop all agents** pauses every agent and voids all open PayPal authorizations in one step |
+
+## Features
+
+- **Spending mandate in plain English.** Write the rules in a sentence. Claude turns them into rules, and you see before/after for each change and apply.
+- **Many agents, one mandate.** The built-in reorder agent and any external agent (Claude Desktop, Cursor) via **MCP**, each with its own identity, on/off switch and monthly budget.
+- **Undo on every agent payment.** PayPal authorizations with an undo window, a toast with countdown, void before capture, refund after.
+- **Approval inbox** for exceptions, with the reason and one-click approval in PayPal. Approval re-checks the hard caps at that moment.
+- **Resilient PayPal flow.** If PayPal refuses to charge the saved account (`NOT_ENABLED_TO_VAULT_PAYMENT_SOURCE`, a common sandbox issue), orders fall back to approval in PayPal instead of failing. Verified webhooks keep status in sync.
+
 ## What happens in the demo
 
 | SKU | Days of cover | Agent proposes | Mandate engine says | Why |
@@ -40,12 +58,42 @@ With `ANTHROPIC_API_KEY` set, **Claude** plans the orders with tool use: `get_st
 
 Without a key, a deterministic planner follows the same tool protocol, so the app, the tests and the demo work offline.
 
+## Connect any agent with MCP
+
+```json
+{
+  "mcpServers": {
+    "mandate": {
+      "command": "node",
+      "args": ["/path/to/mandate/src/mcp.js"],
+      "env": { "MANDATE_URL": "https://your-mandate-host", "MANDATE_AGENT_ID": "claude-desktop", "MANDATE_AGENT_TOKEN": "..." }
+    }
+  }
+}
+```
+
+Tools: `get_spending_mandate`, `check_purchase` (dry run with every rule), `purchase`, `get_order_status`. Agents can never change the mandate or approve their own exceptions.
+
+## Security
+
+- Secrets only in environment variables (see `.env.example`). Nothing secret is stored in the repo or sent to the browser.
+- Strict Content-Security-Policy, no framing, `nosniff`, HSTS behind HTTPS, and no `x-powered-by` header.
+- Cross-site writes are blocked (Origin and `Sec-Fetch-Site` checks). The external agent API needs a bearer token (`MANDATE_AGENT_TOKEN`).
+- Rate limiting and request size limits. PayPal webhooks are trusted only after PayPal verifies the signature.
+- Per-order locks, so a double-click can't void or approve twice. Every PayPal call is idempotent (`PayPal-Request-Id`).
+- The model never sets prices or totals: the server prices every line from the catalogue.
+- `npm audit`: 0 known vulnerabilities in production dependencies.
+
+## Quality
+
+`npm run check` runs ESLint and **26 tests**: policy rules, PayPal payloads, the full agent run, undo/void/refund, split orders, the kill switch, vault fallback, webhooks, the plain-English parser, the HTTP API, an end-to-end MCP client, and security (headers, CSRF, auth, limits, double-click). GitHub Actions runs the same checks on Node 20 and 22. The design system is in [DESIGN.md](DESIGN.md).
+
 ## Run it
 
 ```bash
 npm install
 npm start            # http://localhost:3000
-npm test             # 11 tests: policy, PayPal payloads, agent run, undo, HTTP flow
+npm run check        # lint + 26 tests
 ```
 
 With no credentials the app runs a **simulated PayPal** (clearly labelled in the header) so anyone can try the full flow.
@@ -83,6 +131,9 @@ src/agent.js    Claude tool-use agent + deterministic planner
 src/paypal.js   PayPal REST client + simulator with the same interface
 src/orders.js   order lifecycle: authorize, approve, undo (void/refund), capture
 src/server.js   Express API, live updates over Server-Sent Events
+src/security.js headers, same-origin check, rate limit
+src/mcp.js      MCP server for external agents
+src/mandate-text.js  plain-English mandate → rules (Claude or parser)
 public/         dashboard (AG Grid order grid, vanilla JS)
 test/           node:test suite
 ```
