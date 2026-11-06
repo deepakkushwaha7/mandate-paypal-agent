@@ -275,3 +275,23 @@ test('HTTP: external agent (MCP) purchase, check and status', async () => {
     stop();
   }
 });
+
+test('PayPal idempotency keys are unique per order, even when order numbers repeat', async () => {
+  const seen = [];
+  const fakeRest = new (require('../src/paypal').PayPalRest)({ clientId: 'x', clientSecret: 'y' });
+  fakeRest.call = async (method, path, body, requestId) => {
+    seen.push({ requestId, invoice: body && body.purchase_units && body.purchase_units[0].invoice_id });
+    return { id: 'O', status: 'COMPLETED', purchase_units: [{ payments: { authorizations: [{ id: 'A', status: 'CREATED' }] } }] };
+  };
+  const a = fresh();
+  const b = fresh();
+  for (const { store } of [a, b]) {
+    store.state.mandate.vaultId = 'V';
+    const orders = new Orders({ store, paypal: fakeRest, baseUrl: 'http://t' });
+    const o = orders.create(evaluate(store.state, { lines: [{ sku: 'TIS-A3-GOLD', qty: 1000 }] }), {});
+    assert.equal(o.id, 'PO-1001'); // same order number in both workspaces
+    await orders.payAuto(o);
+  }
+  assert.notEqual(seen[0].requestId, seen[1].requestId);
+  assert.notEqual(seen[0].invoice, seen[1].invoice);
+});

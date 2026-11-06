@@ -7,6 +7,7 @@
 //   CAPTURED         paid to the supplier; Undo now refunds
 //   VOIDED / REFUNDED / REJECTED / FAILED
 
+const crypto = require('crypto');
 const { evaluate, round2, eur } = require('./policy');
 
 function isVaultRefusal(e) {
@@ -45,6 +46,7 @@ class Orders {
     const status = v.decision === 'blocked' ? 'BLOCKED' : v.decision === 'auto' ? 'PAYING' : 'NEEDS_APPROVAL';
     const order = {
       id: this.store.nextId('PO'),
+      key: crypto.randomUUID(),
       createdAt: new Date().toISOString(),
       createdBy: actor,
       agentId: v.agentId,

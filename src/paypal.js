@@ -12,6 +12,13 @@
 
 const crypto = require('crypto');
 
+// Globally unique key per order. Order numbers (PO-1002) repeat across demo
+// workspaces, so they must never be used as PayPal idempotency keys.
+function orderKey(order) {
+  if (!order.key) order.key = crypto.randomUUID();
+  return order.key;
+}
+
 function money(n) {
   return (Math.round(n * 100) / 100).toFixed(2);
 }
@@ -35,7 +42,7 @@ function purchaseUnit(order, catalogue) {
   const itemTotal = items.reduce((s, i) => s + Number(i.unit_amount.value) * Number(i.quantity), 0);
   return {
     reference_id: order.id,
-    invoice_id: `${order.id}-${Date.now()}`,
+    invoice_id: `${order.id}-${orderKey(order).slice(0, 8)}`,
     description: `Agent reorder ${order.id} for ${order.supplierName}`.slice(0, 127),
     custom_id: order.id,
     soft_descriptor: 'MANDATE',
@@ -128,7 +135,7 @@ class PayPalRest {
       intent: 'AUTHORIZE',
       purchase_units: [purchaseUnit(order, catalogue)],
       payment_source: { paypal: { vault_id: vaultId } },
-    }, `auth-${order.id}`);
+    }, `auth-${orderKey(order)}`);
     const auth = r.purchase_units && r.purchase_units[0].payments && r.purchase_units[0].payments.authorizations && r.purchase_units[0].payments.authorizations[0];
     if (!auth) throw new PayPalError(`PayPal returned order ${r.id} with status ${r.status} but no authorization.`, 422, r);
     return { paypalOrderId: r.id, authorizationId: auth.id, status: auth.status, expiresAt: auth.expiration_time || null };
@@ -149,7 +156,7 @@ class PayPalRest {
           },
         },
       },
-    }, `approval-${order.id}`);
+    }, `approval-${orderKey(order)}`);
     const approve = (r.links || []).find((l) => l.rel === 'payer-action' || l.rel === 'approve');
     return { paypalOrderId: r.id, approveUrl: approve && approve.href };
   }
@@ -163,7 +170,7 @@ class PayPalRest {
   async captureAuthorization(authorizationId, order) {
     const r = await this.call('POST', `/v2/payments/authorizations/${authorizationId}/capture`, {
       final_capture: true,
-      invoice_id: `${order.id}-cap`,
+      invoice_id: `${order.id}-${orderKey(order).slice(0, 8)}-cap`,
       note_to_payer: `Supplier order ${order.id}`,
     }, `capture-${authorizationId}`);
     return { captureId: r.id, status: r.status };
