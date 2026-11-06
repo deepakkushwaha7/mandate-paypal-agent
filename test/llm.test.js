@@ -108,3 +108,23 @@ test('Gemini adapter falls back to the next model when one is overloaded', async
     global.fetch = realFetch;
   }
 });
+
+test('Gemini adapter moves on when a model hangs', async () => {
+  llm.resetModelMemory();
+  const realFetch = global.fetch;
+  global.fetch = (url, opts) => {
+    if (/slow-model/.test(url)) {
+      return new Promise((_, reject) => opts.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))));
+    }
+    return Promise.resolve({ ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: 'fast' }] } }] }) });
+  };
+  try {
+    const t = Date.now();
+    const r = await llm.chat({ system: 's', messages: [{ role: 'user', text: 'x' }], tools: [] }, { GEMINI_API_KEY: 'k', LLM_MODEL: 'slow-model', GEMINI_FALLBACK_MODELS: 'quick-model', GEMINI_TIMEOUT_MS: '200' });
+    assert.equal(r.text, 'fast');
+    assert.ok(Date.now() - t < 2000);
+  } finally {
+    global.fetch = realFetch;
+    llm.resetModelMemory();
+  }
+});

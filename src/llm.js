@@ -1,7 +1,7 @@
 // One small interface over the model providers Mandate supports, so the
 // agent loop and the mandate parser don't care which model runs them.
 //
-//   GEMINI_API_KEY     Google Gemini (free tier)      default model gemini-3.8-flash
+//   GEMINI_API_KEY     Google Gemini (free tier)      default model gemini-3.5-flash-lite
 //   ANTHROPIC_API_KEY  Anthropic Claude                default model claude-sonnet-4-5
 //   GROQ_API_KEY       Groq (OpenAI-compatible, free) default model llama-3.3-70b-versatile
 //   LLM_MODEL          optional override for whichever provider is active
@@ -22,7 +22,7 @@ function activeProvider(env = process.env) {
   return null;
 }
 
-const DEFAULT_MODEL = { anthropic: 'claude-sonnet-4-5', gemini: 'gemini-3.8-flash', groq: 'llama-3.3-70b-versatile' };
+const DEFAULT_MODEL = { anthropic: 'claude-sonnet-4-5', gemini: 'gemini-3.5-flash-lite', groq: 'llama-3.3-70b-versatile' };
 const LABEL = { anthropic: 'Claude', gemini: 'Gemini', groq: 'Llama on Groq', replay: 'Gemini' };
 
 function modelFor(p, env = process.env) {
@@ -34,7 +34,13 @@ async function postJson(url, headers, body, timeoutMs = 45000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body), signal: ctrl.signal });
+    let res;
+    try {
+      res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body), signal: ctrl.signal });
+    } catch (e) {
+      if (e.name === 'AbortError') throw new Error(`Model request failed (504): no answer within ${Math.round(timeoutMs / 1000)}s`);
+      throw new Error(`Model request failed (502): ${e.message}`);
+    }
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
       const msg = (json.error && (json.error.message || json.error.type)) || res.statusText;
@@ -79,7 +85,8 @@ async function anthropicChat({ system, messages, tools, forceTool }, env) {
 // Free-tier models are sometimes overloaded (503) or rate limited (429), and
 // Google retires names (404 that names the replacement). Try the configured
 // model, then a chain of fallbacks, and stick to whichever worked for a while.
-const GEMINI_FALLBACKS = ['gemini-3.5-flash-lite', 'gemini-flash-lite-latest', 'gemini-3.1-flash-lite', 'gemini-flash-latest'];
+const GEMINI_FALLBACKS = ['gemini-flash-lite-latest', 'gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-flash-latest'];
+const GEMINI_TIMEOUT_MS = 15000;
 const RETRYABLE = /\((404|429|500|502|503|504)\)/;
 const STICKY_MS = 10 * 60 * 1000;
 let geminiModel = null;
@@ -97,7 +104,7 @@ async function geminiWithFallback(body, env) {
   for (let i = 0; i < chain.length; i++) {
     const model = chain[i];
     try {
-      const json = await postJson(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, { 'x-goog-api-key': env.GEMINI_API_KEY }, body);
+      const json = await postJson(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, { 'x-goog-api-key': env.GEMINI_API_KEY }, body, Number(env.GEMINI_TIMEOUT_MS) || GEMINI_TIMEOUT_MS);
       if (model !== primary) {
         if (geminiModel !== model) console.warn(`[llm] using ${model} while ${primary} is unavailable`);
         geminiModel = model;
