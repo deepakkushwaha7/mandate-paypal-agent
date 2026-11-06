@@ -41,6 +41,8 @@ Approving opens PayPal. Auto-paid orders show a live **Undo** countdown, then ca
 
 ## PayPal integration
 
+Verified end to end on the PayPal sandbox (6 Nov 2026) with a Netherlands merchant and buyer: buyer saves PayPal (Vault v3) → agent authorizes €165 with no buyer present → capture → refund; agent authorizes €280 → void; buyer-approved €275 order → authorize → capture.
+
 | Step | PayPal API |
 | --- | --- |
 | Buyer saves PayPal for the agent | Vault v3: `POST /v3/vault/setup-tokens` → buyer approves → `POST /v3/vault/payment-tokens` |

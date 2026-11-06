@@ -63,7 +63,7 @@ The whole project was built during the submission period. The concept comes from
 5. On a "Needs you" order, click **Approve in PayPal**.
 6. Click **Reset demo** at any time.
 
-Sandbox buyer: `<fill in: sandbox personal account email>` / `<fill in: password>`
+Sandbox buyer (Netherlands, PayPal sandbox only): `sb-gepia53659455@personal.example.com` / `A*h7V8o4`
 
 ## AI tools used
 Claude (Anthropic) is the purchasing agent at runtime, using tool use. Claude also helped build the project.
