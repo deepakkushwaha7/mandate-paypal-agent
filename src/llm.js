@@ -23,9 +23,10 @@ function activeProvider(env = process.env) {
 }
 
 const DEFAULT_MODEL = { anthropic: 'claude-sonnet-4-5', gemini: 'gemini-3.8-flash', groq: 'llama-3.3-70b-versatile' };
-const LABEL = { anthropic: 'Claude', gemini: 'Gemini', groq: 'Llama on Groq' };
+const LABEL = { anthropic: 'Claude', gemini: 'Gemini', groq: 'Llama on Groq', replay: 'Gemini' };
 
 function modelFor(p, env = process.env) {
+  if (p === 'replay') return env.LLM_REPLAY_MODEL || 'gemini (recorded run)';
   return env.LLM_MODEL || (p === 'anthropic' && env.ANTHROPIC_MODEL) || DEFAULT_MODEL[p];
 }
 
@@ -168,8 +169,23 @@ async function openaiCompatChat({ system, messages, tools, forceTool }, env) {
   return { text: (msg.content || '').trim(), toolCalls, stop: toolCalls.length ? 'tool' : 'end' };
 }
 
+// Replays a captured model session (LLM_PROVIDER=replay, LLM_REPLAY_FILE=...).
+// Used to re-record demos offline with the exact responses a live model gave.
+let replay = null;
+function replayChat(req, env) {
+  if (!replay) {
+    replay = JSON.parse(require('fs').readFileSync(env.LLM_REPLAY_FILE, 'utf8'));
+    replay.cursor = 0;
+  }
+  if (req.forceTool === 'set_mandate') return { text: '', toolCalls: [{ id: 'r-parse', name: 'set_mandate', input: replay.parse }], stop: 'tool' };
+  if (req.messages.length === 1) replay.cursor = 0;
+  const turn = replay.agent[replay.cursor++] || { text: 'Done.', toolCalls: [{ id: 'r-end', name: 'finish', input: { summary: 'Done.' } }] };
+  return { text: turn.text || '', toolCalls: (turn.toolCalls || []).map((c, i) => ({ id: `r-${replay.cursor}-${i}`, ...c })), stop: 'tool' };
+}
+
 async function chat(req, env = process.env) {
   const p = activeProvider(env);
+  if (p === 'replay') return replayChat(req, env);
   if (p === 'anthropic') return anthropicChat(req, env);
   if (p === 'gemini') return geminiChat(req, env);
   if (p === 'groq') return openaiCompatChat(req, env);
