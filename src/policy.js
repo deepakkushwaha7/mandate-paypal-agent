@@ -181,3 +181,41 @@ function evaluate(state, proposal, opts = {}) {
 }
 
 module.exports = { evaluate, price, spentThisMonth, round2, eur };
+
+// Gate for any other money-moving action an agent wants to take through
+// PayPal (for example a refund or an invoice via PayPal's Agent Toolkit).
+// Same identity, budget and auto-pay rules as purchases.
+function evaluateAction(state, { agentId, action, amount, note }, opts = {}) {
+  const now = opts.now || new Date();
+  const m = state.mandate;
+  const agent = (state.agents || []).find((a) => a.id === agentId);
+  const value = round2(Number(amount));
+  const checks = [];
+  const add = (code, label, status, detail) => checks.push({ code, label, status, detail });
+  if (!agent) add('AGENT', 'Agent is registered', 'block', `Unknown agent "${agentId}".`);
+  else add('AGENT', 'Agent is registered', agent.active ? 'pass' : 'block', agent.active ? `${agent.name}.` : `${agent.name} is paused.`);
+  add('MANDATE_PAUSED', 'Mandate is active', m.active ? 'pass' : 'block', m.active ? 'Agents may spend.' : 'The mandate is paused.');
+  if (!Number.isFinite(value) || value <= 0) add('AMOUNT', 'Amount is valid', 'block', 'Amount must be a positive number.');
+  else {
+    add('PER_ORDER_CAP', `Under ${eur(m.perOrderCap)}`, value > m.perOrderCap ? 'block' : 'pass', `${eur(value)} of ${eur(m.perOrderCap)}.`);
+    const remaining = round2(m.monthlyCap - spentThisMonth(state, now));
+    add('MONTHLY_CAP', 'Fits the monthly budget', value > remaining ? 'block' : 'pass', `${eur(value)} of ${eur(Math.max(0, remaining))} left this month.`);
+    if (agent && agent.monthlyCap) {
+      const left = round2(agent.monthlyCap - spentThisMonth(state, now, agentId));
+      add('AGENT_CAP', `Fits ${agent.name}'s budget`, value > left ? 'block' : 'pass', `${eur(value)} of ${eur(Math.max(0, left))} left for this agent.`);
+    }
+    add('ABOVE_AUTO', `Auto-pay below ${eur(m.autoApproveBelow)}`, value >= m.autoApproveBelow ? 'review' : 'pass', value >= m.autoApproveBelow ? `${eur(value)} needs a human.` : `${eur(value)}.`);
+  }
+  let decision = 'auto';
+  if (checks.some((c) => c.status === 'block')) decision = 'blocked';
+  else if (checks.some((c) => c.status === 'review')) decision = 'needs_approval';
+  return {
+    decision,
+    action: String(action || 'payment').slice(0, 60),
+    amount: value,
+    checks,
+    receipt: { mandateVersion: m.version || 1, evaluatedAt: now.toISOString(), agentId, agentName: agent ? agent.name : agentId, rationale: String(note || '').slice(0, 500) },
+  };
+}
+
+module.exports.evaluateAction = evaluateAction;

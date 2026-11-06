@@ -7,7 +7,7 @@
 // Config (env):
 //   MANDATE_URL         base URL of the Mandate app (default http://localhost:3000)
 //   MANDATE_AGENT_ID    which agent identity to use (default claude-desktop)
-//   MANDATE_AGENT_TOKEN optional bearer token, if the app requires one
+//   MANDATE_AGENT_KEY   the agent key shown in the dashboard (Agents → Connect an agent)
 
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
@@ -18,7 +18,8 @@ const AGENT = process.env.MANDATE_AGENT_ID || 'claude-desktop';
 
 async function api(method, path, body) {
   const headers = { 'Content-Type': 'application/json' };
-  if (process.env.MANDATE_AGENT_TOKEN) headers.Authorization = `Bearer ${process.env.MANDATE_AGENT_TOKEN}`;
+  const key = process.env.MANDATE_AGENT_KEY || process.env.MANDATE_AGENT_TOKEN;
+  if (key) headers.Authorization = `Bearer ${key}`;
   const res = await fetch(`${BASE}/api/agents/${AGENT}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(json.error || `Mandate returned ${res.status}`);
