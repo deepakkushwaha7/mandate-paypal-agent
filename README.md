@@ -58,7 +58,7 @@ Every call carries a `PayPal-Request-Id`, so retries are idempotent. Line items 
 
 The purchasing agent is an LLM with tool use: `get_stock`, `get_mandate`, `submit_order` (returns the mandate verdict, so the model self-corrects) and `finish`. It takes plain-language context such as "Black Friday campaign starts in 2 weeks" and plans extra cover. The same model turns a plain-English mandate into structured rules through a strict function schema.
 
-Supported models (set one key): **Google Gemini** (`GEMINI_API_KEY`, free tier, default `gemini-2.5-flash`), **Anthropic Claude** (`ANTHROPIC_API_KEY`) or **Llama on Groq** (`GROQ_API_KEY`). If the model is unavailable before it proposes anything, a deterministic planner that follows the same tool protocol takes over, so a buyer is never stuck. With no key at all, the app, the tests and the demo still run offline.
+Supported models (set one key): **Google Gemini** (`GEMINI_API_KEY`, free tier, default `gemini-3.8-flash`), **Anthropic Claude** (`ANTHROPIC_API_KEY`) or **Llama on Groq** (`GROQ_API_KEY`). If the model is unavailable before it proposes anything, a deterministic planner that follows the same tool protocol takes over, so a buyer is never stuck. With no key at all, the app, the tests and the demo still run offline.
 
 ## Connect any agent with MCP
 

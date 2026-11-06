@@ -278,6 +278,7 @@
       box.innerHTML = `<div style="overflow-x:auto"><table><thead><tr><th>Rule</th><th>Now</th><th>After</th></tr></thead><tbody>
         ${r.changes.map((c) => `<tr><td>${esc(c.label)}</td><td class="from">${esc(c.from)}</td><td class="to">${esc(c.to)}</td></tr>`).join('')}</tbody></table></div>
         ${r.warnings.map((w) => `<div class="warn">${esc(w)}</div>`).join('')}
+        ${r.engineError ? `<div class="warn">${esc(r.engineError)}. Read by the rules parser instead; check the changes.</div>` : ''}
         <div class="foot"><button class="btn small" id="apply">Apply ${r.changes.length} change${r.changes.length > 1 ? 's' : ''}</button><button class="btn ghost small" id="discard">Discard</button><span class="muted">Read by ${r.engine === 'rules' ? 'the rules parser' : esc(r.engine)}. Nothing changes until you apply.</span></div>`;
       $('parse-status').textContent = '';
       $('apply').onclick = act(async () => {

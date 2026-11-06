@@ -1,7 +1,7 @@
 // One small interface over the model providers Mandate supports, so the
 // agent loop and the mandate parser don't care which model runs them.
 //
-//   GEMINI_API_KEY     Google Gemini (free tier)      default model gemini-2.5-flash
+//   GEMINI_API_KEY     Google Gemini (free tier)      default model gemini-3.8-flash
 //   ANTHROPIC_API_KEY  Anthropic Claude                default model claude-sonnet-4-5
 //   GROQ_API_KEY       Groq (OpenAI-compatible, free) default model llama-3.3-70b-versatile
 //   LLM_MODEL          optional override for whichever provider is active
@@ -22,7 +22,7 @@ function activeProvider(env = process.env) {
   return null;
 }
 
-const DEFAULT_MODEL = { anthropic: 'claude-sonnet-4-5', gemini: 'gemini-2.5-flash', groq: 'llama-3.3-70b-versatile' };
+const DEFAULT_MODEL = { anthropic: 'claude-sonnet-4-5', gemini: 'gemini-3.8-flash', groq: 'llama-3.3-70b-versatile' };
 const LABEL = { anthropic: 'Claude', gemini: 'Gemini', groq: 'Llama on Groq' };
 
 function modelFor(p, env = process.env) {
@@ -75,6 +75,7 @@ async function anthropicChat({ system, messages, tools, forceTool }, env) {
 }
 
 // ---- Gemini ----
+let geminiModel = null;
 function geminiSchema(s) {
   if (!s || typeof s !== 'object') return s;
   const out = {};
@@ -110,8 +111,20 @@ async function geminiChat({ system, messages, tools, forceTool }, env) {
     toolConfig: { functionCallingConfig: forceTool ? { mode: 'ANY', allowedFunctionNames: [forceTool] } : { mode: 'AUTO' } },
     generationConfig: { temperature: 0.2, maxOutputTokens: 2048 },
   };
-  const model = modelFor('gemini', env);
-  const json = await postJson(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, { 'x-goog-api-key': env.GEMINI_API_KEY }, body);
+  let model = geminiModel || modelFor('gemini', env);
+  const url = (m) => `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent`;
+  let json;
+  try {
+    json = await postJson(url(model), { 'x-goog-api-key': env.GEMINI_API_KEY }, body);
+  } catch (e) {
+    // Google retires model names; its 404 names the replacement. Follow it once
+    // and remember it for the rest of this process.
+    const next = /\(404\)/.test(e.message) && (e.message.match(/models\/([\w.-]+)\s+for/) || [])[1];
+    if (!next || next === model) throw e;
+    console.warn(`[llm] ${model} retired; switching to ${next}`);
+    geminiModel = model = next;
+    json = await postJson(url(model), { 'x-goog-api-key': env.GEMINI_API_KEY }, body);
+  }
   const parts = (json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts) || [];
   const toolCalls = parts.filter((p) => p.functionCall).map((p) => ({ id: crypto.randomUUID(), name: p.functionCall.name, input: p.functionCall.args || {}, signature: p.thoughtSignature }));
   return {
@@ -165,7 +178,7 @@ async function chat(req, env = process.env) {
 
 function describe(env = process.env) {
   const p = activeProvider(env);
-  return p ? { provider: p, label: LABEL[p], model: modelFor(p, env) } : null;
+  return p ? { provider: p, label: LABEL[p], model: (p === 'gemini' && geminiModel) || modelFor(p, env) } : null;
 }
 
 module.exports = { chat, activeProvider, describe, geminiSchema };

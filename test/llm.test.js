@@ -44,10 +44,10 @@ test('Gemini adapter: request shape and function-call parsing', async () => {
     return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: 'ok' }, { functionCall: { name: 'set_mandate', args: { monthlyCap: 3000 } } }] } }] }) };
   };
   try {
-    const env = { GEMINI_API_KEY: 'k', LLM_MODEL: 'gemini-2.5-flash' };
+    const env = { GEMINI_API_KEY: 'k', LLM_MODEL: 'gemini-test-model' };
     const tools = [{ name: 'noop', description: 'x', parameters: { type: 'object', properties: {} } }, { name: 'set_mandate', description: 'y', parameters: { type: 'object', properties: { monthlyCap: { type: 'number' } }, additionalProperties: false } }];
     const r = await llm.chat({ system: 'sys', messages: [{ role: 'user', text: 'hi' }], tools, forceTool: 'set_mandate' }, env);
-    assert.match(sent.url, /models\/gemini-2\.5-flash:generateContent$/);
+    assert.match(sent.url, /models\/gemini-test-model:generateContent$/);
     assert.equal(sent.headers['x-goog-api-key'], 'k');
     assert.equal(sent.body.toolConfig.functionCallingConfig.mode, 'ANY');
     assert.equal(sent.body.tools[0].functionDeclarations[0].parameters, undefined);
@@ -65,4 +65,21 @@ test('provider selection', () => {
   assert.equal(llm.activeProvider({ GEMINI_API_KEY: 'x' }), 'gemini');
   assert.equal(llm.activeProvider({ GROQ_API_KEY: 'x' }), 'groq');
   assert.equal(llm.activeProvider({ GEMINI_API_KEY: 'x', ANTHROPIC_API_KEY: 'y' }), 'anthropic');
+});
+
+test('Gemini adapter follows a retired-model 404 to the suggested model', async () => {
+  const realFetch = global.fetch;
+  const urls = [];
+  global.fetch = async (url) => {
+    urls.push(url);
+    if (urls.length === 1) return { ok: false, status: 404, statusText: 'Not Found', json: async () => ({ error: { message: 'This model models/old-flash is no longer available to new users. Please update your code to use models/new-flash for the latest features.' } }) };
+    return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: 'hi' }] } }] }) };
+  };
+  try {
+    const r = await llm.chat({ system: 's', messages: [{ role: 'user', text: 'x' }], tools: [] }, { GEMINI_API_KEY: 'k', LLM_MODEL: 'old-flash' });
+    assert.equal(r.text, 'hi');
+    assert.match(urls[1], /models\/new-flash:generateContent/);
+  } finally {
+    global.fetch = realFetch;
+  }
 });

@@ -33,12 +33,12 @@ function parseHeuristic(text, state) {
   const out = {};
   let m;
   if ((m = t.match(new RegExp(`${AMOUNT}\\s*(?:a|per|each|/|every)\\s*month`))) || (m = t.match(new RegExp(`month(?:ly)?(?:\\s+(?:cap|budget|limit))?(?:\\s+(?:of|is|at))?\\s*${AMOUNT}`)))) out.monthlyCap = num(m[1]);
-  if ((m = t.match(new RegExp(`${AMOUNT}\\s*(?:a|per|each|/|an)\\s*order`))) || (m = t.match(new RegExp(`(?:per|each|any single|a single|one)\\s*order(?:\\s+(?:cap|limit|max(?:imum)?))?(?:\\s+(?:of|is|at|over|above))?\\s*${AMOUNT}`)))) out.perOrderCap = num(m[1]);
-  if ((m = t.match(new RegExp(`(?:under|below|less than|up to)\\s*${AMOUNT}[^.]*?(?:own|auto|without|automatically|yourself)`))) ||
+  if ((m = t.match(new RegExp(`${AMOUNT}\\s*(?:a|per|each|/|an|on (?:one|a single|any(?: single)?|a|each))\\s*order`))) || (m = t.match(new RegExp(`(?:per|each|any single|a single|one)\\s*order(?:\\s+(?:cap|limit|max(?:imum)?))?(?:\\s+(?:of|is|at|over|above))?\\s*${AMOUNT}`)))) out.perOrderCap = num(m[1]);
+  if ((m = t.match(new RegExp(`(?:under|below|less than|up to)\\s*${AMOUNT}[^.]*?(?:own|auto|without|automatically|yourself|just pay|can pay|go ahead|pay it)`))) ||
       (m = t.match(new RegExp(`(?:nothing|anything|no(?:thing)? order)\\s*(?:over|above|more than)\\s*${AMOUNT}\\s*without`))) ||
       (m = t.match(new RegExp(`auto[- ]?pay(?:\\s+(?:below|under|up to))?\\s*${AMOUNT}`)))) out.autoApproveBelow = num(m[1]);
   if ((m = t.match(/(?:price|prices)[^.]*?(\d+(?:\.\d+)?)\s*%/)) || (m = t.match(/(\d+(?:\.\d+)?)\s*%[^.]*price/))) out.maxPriceIncreasePct = Number(m[1]);
-  if ((m = t.match(/undo[^.]*?(\d+)\s*(second|sec|s\b|minute|min)/))) out.undoWindowSec = Number(m[1]) * (/min/.test(m[2]) ? 60 : 1);
+  if ((m = t.match(/undo[^.]*?(\d+)\s*(second|sec|s\b|minute|min)/)) || (m = t.match(/(\d+)\s*(seconds?|secs?|minutes?|mins?)\b[^.]*undo/))) out.undoWindowSec = Number(m[1]) * (/min/.test(m[2]) ? 60 : 1);
 
   const cats = [...new Set(state.catalogue.map((c) => c.category))];
   const namedCats = cats.filter((c) => new RegExp(`\\b${c}`).test(t));
@@ -118,11 +118,14 @@ async function parseMandate(text, state) {
   const model = llm.describe();
   let raw;
   let engine = 'rules';
+  let engineError = null;
   if (model) {
     try {
       raw = await parseModel(text, state);
       engine = model.label;
-    } catch {
+    } catch (e) {
+      engineError = `${model.label} unavailable: ${e.message}`;
+      console.error(`[mandate-text] ${engineError}`);
       raw = parseHeuristic(text, state);
     }
   } else {
@@ -133,7 +136,7 @@ async function parseMandate(text, state) {
   const next = { ...state.mandate, ...proposed };
   if (next.autoApproveBelow > next.perOrderCap) warnings.push('Auto-pay limit is higher than the per-order cap, so the cap wins.');
   if (next.perOrderCap > next.monthlyCap) warnings.push('Per-order cap is higher than the monthly cap.');
-  return { engine, proposed, changes: diff(state.mandate, proposed, state), warnings };
+  return { engine, engineError, proposed, changes: diff(state.mandate, proposed, state), warnings };
 }
 
 module.exports = { parseMandate, parseHeuristic, validate, diff, FIELDS };
