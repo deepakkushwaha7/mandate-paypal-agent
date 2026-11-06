@@ -104,8 +104,8 @@
     $('company').textContent = `${s.company.name} · ${s.company.buyer}`;
     $('modes').innerHTML =
       `<span class="pill ${s.mode.paypal === 'simulated' ? 'sim' : ''}">PayPal: ${s.mode.paypal}</span>` +
-      `<span class="pill ${s.mode.agent === 'rules' ? 'sim' : ''}">Agent: ${s.mode.agent === 'claude' ? esc(s.mode.model) : 'rules planner'}</span>`;
-    $('engine').textContent = s.mode.agent === 'claude' ? `Claude (${s.mode.model}) with tool use` : 'Deterministic planner (add ANTHROPIC_API_KEY for Claude)';
+      `<span class="pill ${s.mode.ai ? '' : 'sim'}">AI: ${s.mode.ai ? esc(s.mode.ai.model) : 'rules planner'}</span>`;
+    $('engine').textContent = s.mode.ai ? `${s.mode.ai.label} with tool use` : 'Built-in planner (add an AI key for live reasoning)';
 
     // budget
     const m = s.mandate;
@@ -278,7 +278,7 @@
       box.innerHTML = `<div style="overflow-x:auto"><table><thead><tr><th>Rule</th><th>Now</th><th>After</th></tr></thead><tbody>
         ${r.changes.map((c) => `<tr><td>${esc(c.label)}</td><td class="from">${esc(c.from)}</td><td class="to">${esc(c.to)}</td></tr>`).join('')}</tbody></table></div>
         ${r.warnings.map((w) => `<div class="warn">${esc(w)}</div>`).join('')}
-        <div class="foot"><button class="btn small" id="apply">Apply ${r.changes.length} change${r.changes.length > 1 ? 's' : ''}</button><button class="btn ghost small" id="discard">Discard</button><span class="muted">Read by ${r.engine === 'claude' ? 'Claude' : 'the rules parser'}. Nothing changes until you apply.</span></div>`;
+        <div class="foot"><button class="btn small" id="apply">Apply ${r.changes.length} change${r.changes.length > 1 ? 's' : ''}</button><button class="btn ghost small" id="discard">Discard</button><span class="muted">Read by ${r.engine === 'rules' ? 'the rules parser' : esc(r.engine)}. Nothing changes until you apply.</span></div>`;
       $('parse-status').textContent = '';
       $('apply').onclick = act(async () => {
         await api('PUT', '/api/mandate', { ...r.proposed, plainText: text });
@@ -419,7 +419,7 @@
         extra += `<div class="chipline"><span>${passed}/${t.checks.filter((c) => c.status !== 'skip').length} rules passed</span>${t.checks.filter((c) => c.status === 'review' || c.status === 'block').map((c) => `<span class="${c.status}">${esc(c.label)}</span>`).join('')}</div>`;
       }
     }
-    if (t.kind === 'start') label = t.engine === 'claude' ? 'Claude' : 'Planner';
+    if (t.kind === 'start') label = { anthropic: 'Claude', gemini: 'Gemini', groq: 'Llama' }[t.engine] || 'Planner';
     li.className = cls;
     li.innerHTML = `<span class="k">${esc(label)}</span><div>${esc(t.text)}${extra}</div>`;
     const list = $('trace');

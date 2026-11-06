@@ -1,8 +1,10 @@
 // Turns a mandate written in plain English into structured rules.
-// With ANTHROPIC_API_KEY, Claude extracts the rules with a strict tool schema.
+// With a model configured (llm.js), the model extracts the rules with a strict tool schema.
 // Without it, a pattern parser handles the common phrasings.
 // Either way the result is only a proposal: the buyer sees the changes and
 // confirms them before anything is saved.
+
+const llm = require('./llm');
 
 const FIELDS = {
   monthlyCap: 'Monthly cap',
@@ -52,13 +54,11 @@ function parseHeuristic(text, state) {
   return out;
 }
 
-async function parseClaude(text, state, apiKey, model) {
-  const Anthropic = require('@anthropic-ai/sdk');
-  const client = new Anthropic({ apiKey });
+async function parseModel(text, state) {
   const tool = {
     name: 'set_mandate',
     description: 'Record the spending rules the buyer described. Only include fields the buyer actually stated.',
-    input_schema: {
+    parameters: {
       type: 'object',
       properties: {
         monthlyCap: { type: 'number', description: 'Maximum total spend per calendar month, in EUR.' },
@@ -72,16 +72,15 @@ async function parseClaude(text, state, apiKey, model) {
       },
     },
   };
-  const res = await client.messages.create({
-    model,
-    max_tokens: 600,
+  const res = await llm.chat({
+    system: `Extract spending rules for a purchasing agent. Suppliers: ${state.suppliers.map((s) => `${s.id} = ${s.name}`).join('; ')}. Amounts are EUR. Never invent a rule the buyer did not state. Always answer by calling set_mandate.`,
+    messages: [{ role: 'user', text }],
     tools: [tool],
-    tool_choice: { type: 'tool', name: 'set_mandate' },
-    system: `Extract spending rules for a purchasing agent. Suppliers: ${state.suppliers.map((s) => `${s.id} = ${s.name}`).join('; ')}. Amounts are EUR. Never invent a rule the buyer did not state.`,
-    messages: [{ role: 'user', content: text }],
+    forceTool: 'set_mandate',
   });
-  const use = res.content.find((b) => b.type === 'tool_use');
-  return use ? use.input : {};
+  const call = res.toolCalls.find((c) => c.name === 'set_mandate');
+  if (!call) throw new Error('The model did not return rules.');
+  return call.input || {};
 }
 
 function diff(mandate, proposed, state) {
@@ -116,15 +115,14 @@ function validate(p, state) {
 }
 
 async function parseMandate(text, state) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  const model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5';
+  const model = llm.describe();
   let raw;
   let engine = 'rules';
-  if (apiKey) {
+  if (model) {
     try {
-      raw = await parseClaude(text, state, apiKey, model);
-      engine = 'claude';
-    } catch (e) {
+      raw = await parseModel(text, state);
+      engine = model.label;
+    } catch {
       raw = parseHeuristic(text, state);
     }
   } else {

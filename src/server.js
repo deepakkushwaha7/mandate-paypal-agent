@@ -7,6 +7,7 @@ const { runAgent, stockView, mandateView } = require('./agent');
 const { spentThisMonth, evaluate, eur } = require('./policy');
 const { parseMandate } = require('./mandate-text');
 const security = require('./security');
+const llm = require('./llm');
 
 function createApp(opts = {}) {
   const port = opts.port || process.env.PORT || 3000;
@@ -51,7 +52,7 @@ function createApp(opts = {}) {
     return {
       company: s.company,
       demoMode: process.env.DEMO_MODE !== 'false',
-      mode: { paypal: paypal.mode, agent: process.env.ANTHROPIC_API_KEY ? 'claude' : 'rules', model: process.env.ANTHROPIC_API_KEY ? (process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5') : null },
+      mode: { paypal: paypal.mode, ai: llm.describe() },
       mandate: { ...s.mandate, view: mandateView(s), spent: spentThisMonth(s) },
       suppliers: s.suppliers,
       agents: (s.agents || []).map((a) => ({ ...a, spent: spentThisMonth(s, new Date(), a.id) })),
@@ -314,7 +315,8 @@ if (require.main === module) {
   const { app, port, paypal, baseUrl } = createApp();
   app.listen(port, () => {
     console.log(`Mandate running at ${baseUrl}`);
-    console.log(`PayPal: ${paypal.mode}. Agent: ${process.env.ANTHROPIC_API_KEY ? 'Claude' : 'deterministic planner (set ANTHROPIC_API_KEY for Claude)'}.`);
+    const ai = llm.describe();
+    console.log(`PayPal: ${paypal.mode}. AI: ${ai ? `${ai.label} (${ai.model})` : 'none, using the deterministic planner (set GEMINI_API_KEY)'}.`);
   });
 }
 

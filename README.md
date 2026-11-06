@@ -54,9 +54,9 @@ Every call carries a `PayPal-Request-Id`, so retries are idempotent. Line items 
 
 ## AI
 
-With `ANTHROPIC_API_KEY` set, **Claude** plans the orders with tool use: `get_stock`, `get_mandate`, `submit_order` (returns the mandate verdict), `finish`. It also takes plain-language instructions such as "Black Friday campaign starts in 2 weeks" and plans extra cover.
+The purchasing agent is an LLM with tool use: `get_stock`, `get_mandate`, `submit_order` (returns the mandate verdict, so the model self-corrects) and `finish`. It takes plain-language context such as "Black Friday campaign starts in 2 weeks" and plans extra cover. The same model turns a plain-English mandate into structured rules through a strict function schema.
 
-Without a key, a deterministic planner follows the same tool protocol, so the app, the tests and the demo work offline.
+Supported models (set one key): **Google Gemini** (`GEMINI_API_KEY`, free tier, default `gemini-2.5-flash`), **Anthropic Claude** (`ANTHROPIC_API_KEY`) or **Llama on Groq** (`GROQ_API_KEY`). If the model is unavailable before it proposes anything, a deterministic planner that follows the same tool protocol takes over, so a buyer is never stuck. With no key at all, the app, the tests and the demo still run offline.
 
 ## Connect any agent with MCP
 
@@ -86,14 +86,14 @@ Tools: `get_spending_mandate`, `check_purchase` (dry run with every rule), `purc
 
 ## Quality
 
-`npm run check` runs ESLint and **26 tests**: policy rules, PayPal payloads, the full agent run, undo/void/refund, split orders, the kill switch, vault fallback, webhooks, the plain-English parser, the HTTP API, an end-to-end MCP client, and security (headers, CSRF, auth, limits, double-click). GitHub Actions runs the same checks on Node 20 and 22. The design system is in [DESIGN.md](DESIGN.md).
+`npm run check` runs ESLint and **30 tests**: policy rules, PayPal payloads, the full agent run, undo/void/refund, split orders, the kill switch, vault fallback, webhooks, the plain-English parser, the HTTP API, an end-to-end MCP client, and security (headers, CSRF, auth, limits, double-click). GitHub Actions runs the same checks on Node 20 and 22. The design system is in [DESIGN.md](DESIGN.md).
 
 ## Run it
 
 ```bash
 npm install
 npm start            # http://localhost:3000
-npm run check        # lint + 26 tests
+npm run check        # lint + 30 tests
 ```
 
 With no credentials the app runs a **simulated PayPal** (clearly labelled in the header) so anyone can try the full flow.
@@ -104,7 +104,7 @@ To use the real PayPal sandbox and Claude:
 export PAYPAL_CLIENT_ID=...        # developer.paypal.com → Apps & Credentials → Sandbox
 export PAYPAL_CLIENT_SECRET=...
 export PAYPAL_ENV=sandbox
-export ANTHROPIC_API_KEY=...       # optional, enables Claude
+export GEMINI_API_KEY=...          # free at aistudio.google.com/apikey (or ANTHROPIC_API_KEY / GROQ_API_KEY)
 export PUBLIC_URL=https://your-host  # needed for PayPal return URLs when not on localhost
 npm start
 ```
@@ -140,7 +140,7 @@ test/           node:test suite
 
 ## Built with
 
-PayPal Vault v3, Orders v2 and Payments v2 (sandbox) · Anthropic Claude (tool use) · AG Grid Community · Node.js and Express · Render
+PayPal Vault v3, Orders v2 and Payments v2 (sandbox) · Google Gemini or Anthropic Claude (tool use) · AG Grid Community · Node.js and Express · Render
 
 ## Licence
 
