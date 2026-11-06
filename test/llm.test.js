@@ -68,6 +68,7 @@ test('provider selection', () => {
 });
 
 test('Gemini adapter follows a retired-model 404 to the suggested model', async () => {
+  llm.resetModelMemory();
   const realFetch = global.fetch;
   const urls = [];
   global.fetch = async (url) => {
@@ -79,6 +80,30 @@ test('Gemini adapter follows a retired-model 404 to the suggested model', async 
     const r = await llm.chat({ system: 's', messages: [{ role: 'user', text: 'x' }], tools: [] }, { GEMINI_API_KEY: 'k', LLM_MODEL: 'old-flash' });
     assert.equal(r.text, 'hi');
     assert.match(urls[1], /models\/new-flash:generateContent/);
+  } finally {
+    global.fetch = realFetch;
+  }
+});
+
+test('Gemini adapter falls back to the next model when one is overloaded', async () => {
+  llm.resetModelMemory();
+  const realFetch = global.fetch;
+  const urls = [];
+  global.fetch = async (url) => {
+    urls.push(url);
+    if (/busy-model/.test(url)) return { ok: false, status: 503, statusText: 'Unavailable', json: async () => ({ error: { message: 'This model is currently experiencing high demand.' } }) };
+    return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] }) };
+  };
+  try {
+    const env = { GEMINI_API_KEY: 'k', LLM_MODEL: 'busy-model', GEMINI_FALLBACK_MODELS: 'spare-model' };
+    const r = await llm.chat({ system: 's', messages: [{ role: 'user', text: 'x' }], tools: [] }, env);
+    assert.equal(r.text, 'ok');
+    assert.match(urls[0], /busy-model/);
+    assert.match(urls[1], /spare-model/);
+    assert.equal(llm.describe(env).model, 'spare-model');
+    // A non-retryable error (bad key) is not hidden by fallbacks.
+    global.fetch = async () => ({ ok: false, status: 400, statusText: 'Bad', json: async () => ({ error: { message: 'API key not valid' } }) });
+    await assert.rejects(() => llm.chat({ system: 's', messages: [{ role: 'user', text: 'x' }], tools: [] }, { GEMINI_API_KEY: 'k', LLM_MODEL: 'other' }), /API key not valid/);
   } finally {
     global.fetch = realFetch;
   }

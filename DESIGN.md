@@ -6,8 +6,8 @@ Mandate moves money on someone's behalf, so the interface has one job: make it o
 
 1. **State is colour, and colour is state.** Each semantic colour means one thing everywhere: in the grid, the receipt, the meter, the toasts and the inbox.
 2. **Every automatic action is reversible from where you see it.** A payment the agent makes shows an Undo, with its countdown, in a toast, in the grid row and in the order.
-3. **Explain before asking.** Anything that waits for a human shows the rule that stopped it ("Price rise within 5%: MBX-S-KRAFT rose 6.9%").
-4. **Nothing irreversible without a confirm step.** The kill switch says how many PayPal authorizations it will void and for how much before it runs.
+3. **Explain before asking.** Anything that waits for a human shows the rule that stopped it ("Mailer box S went up 6.9% since your last order. Your limit is 5%.").
+4. **Nothing irreversible without a confirm step.** Stop all agents says how many payments on hold it will cancel, and for how much, before it runs.
 5. **The model proposes, code decides.** The interface never shows an AI decision as final; it shows the mandate engine's receipt.
 
 ## Tokens
@@ -32,13 +32,13 @@ Mandate moves money on someone's behalf, so the interface has one job: make it o
 
 | Component | Where | Notes |
 | --- | --- | --- |
-| Status pill | Grid, receipt header | `Held · undo`, `Paid`, `Needs you`, `Blocked`, `Undone`, `Refunded` |
+| Status badge | Grid, drawer | `On hold · undo 45s`, `Paid`, `Waiting for you`, `Blocked`, `Undone`, `Refunded`, `Declined` |
 | Payment drawer | Click any payment | Verdict, the rules that decided it, passed rules folded away, the agent's reason, items, PayPal references |
 | Undo toast | Bottom right | One per agent payment, live countdown, disappears at capture |
 | Waiting for you | Under the agent | Only rendered when something waits; "See why" opens the receipt |
 | Stop all agents | Header | Confirmation dialog states how many payments on hold get cancelled, and for how much; Esc cancels |
 | Guided tour | Header and welcome card | 7 steps with a spotlight on each part of the screen; Esc or Skip ends it |
-| Mandate editor | Mandate card | Plain English → preview of changes (before/after) → Apply |
+| Rules editor | Your rules → Edit | Plain English → preview of changes (now / after) → Apply; numbers editable under "Or set the numbers yourself" |
 | Welcome card | Top | One sentence of value, the 3 steps with live progress, tour button; hides when done or dismissed |
 
 ## Accessibility

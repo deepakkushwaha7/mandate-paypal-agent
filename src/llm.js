@@ -76,7 +76,45 @@ async function anthropicChat({ system, messages, tools, forceTool }, env) {
 }
 
 // ---- Gemini ----
+// Free-tier models are sometimes overloaded (503) or rate limited (429), and
+// Google retires names (404 that names the replacement). Try the configured
+// model, then a chain of fallbacks, and stick to whichever worked for a while.
+const GEMINI_FALLBACKS = ['gemini-3.5-flash-lite', 'gemini-flash-lite-latest', 'gemini-3.1-flash-lite', 'gemini-flash-latest'];
+const RETRYABLE = /\((404|429|500|502|503|504)\)/;
+const STICKY_MS = 10 * 60 * 1000;
 let geminiModel = null;
+let geminiStickyUntil = 0;
+
+async function geminiWithFallback(body, env) {
+  const primary = modelFor('gemini', env);
+  const extra = (env.GEMINI_FALLBACK_MODELS || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const chain = [];
+  const add = (m) => { if (m && !chain.includes(m)) chain.push(m); };
+  if (geminiModel && Date.now() < geminiStickyUntil) add(geminiModel);
+  add(primary);
+  (extra.length ? extra : GEMINI_FALLBACKS).forEach(add);
+  let lastError;
+  for (let i = 0; i < chain.length; i++) {
+    const model = chain[i];
+    try {
+      const json = await postJson(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, { 'x-goog-api-key': env.GEMINI_API_KEY }, body);
+      if (model !== primary) {
+        if (geminiModel !== model) console.warn(`[llm] using ${model} while ${primary} is unavailable`);
+        geminiModel = model;
+        geminiStickyUntil = Date.now() + STICKY_MS;
+      } else {
+        geminiModel = null;
+      }
+      return json;
+    } catch (e) {
+      lastError = e;
+      if (!RETRYABLE.test(e.message)) throw e;
+      const replacement = /\(404\)/.test(e.message) && (e.message.match(/models\/([\w.-]+)\s+for/) || [])[1];
+      if (replacement && !chain.includes(replacement)) chain.splice(i + 1, 0, replacement);
+    }
+  }
+  throw lastError;
+}
 function geminiSchema(s) {
   if (!s || typeof s !== 'object') return s;
   const out = {};
@@ -112,20 +150,7 @@ async function geminiChat({ system, messages, tools, forceTool }, env) {
     toolConfig: { functionCallingConfig: forceTool ? { mode: 'ANY', allowedFunctionNames: [forceTool] } : { mode: 'AUTO' } },
     generationConfig: { temperature: 0.2, maxOutputTokens: 2048 },
   };
-  let model = geminiModel || modelFor('gemini', env);
-  const url = (m) => `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent`;
-  let json;
-  try {
-    json = await postJson(url(model), { 'x-goog-api-key': env.GEMINI_API_KEY }, body);
-  } catch (e) {
-    // Google retires model names; its 404 names the replacement. Follow it once
-    // and remember it for the rest of this process.
-    const next = /\(404\)/.test(e.message) && (e.message.match(/models\/([\w.-]+)\s+for/) || [])[1];
-    if (!next || next === model) throw e;
-    console.warn(`[llm] ${model} retired; switching to ${next}`);
-    geminiModel = model = next;
-    json = await postJson(url(model), { 'x-goog-api-key': env.GEMINI_API_KEY }, body);
-  }
+  const json = await geminiWithFallback(body, env);
   const parts = (json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts) || [];
   const toolCalls = parts.filter((p) => p.functionCall).map((p) => ({ id: crypto.randomUUID(), name: p.functionCall.name, input: p.functionCall.args || {}, signature: p.thoughtSignature }));
   return {
@@ -194,7 +219,13 @@ async function chat(req, env = process.env) {
 
 function describe(env = process.env) {
   const p = activeProvider(env);
-  return p ? { provider: p, label: LABEL[p], model: (p === 'gemini' && geminiModel) || modelFor(p, env) } : null;
+  return p ? { provider: p, label: LABEL[p], model: (p === 'gemini' && geminiModel && Date.now() < geminiStickyUntil && geminiModel) || modelFor(p, env) } : null;
 }
 
-module.exports = { chat, activeProvider, describe, geminiSchema };
+// Clears the remembered fallback model (used by tests).
+function resetModelMemory() {
+  geminiModel = null;
+  geminiStickyUntil = 0;
+}
+
+module.exports = { chat, activeProvider, describe, geminiSchema, resetModelMemory };
